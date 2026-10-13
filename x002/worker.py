@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -225,8 +226,12 @@ def freeze_selection(reader, cfg: dict, dataset_revision: str | None = None) -> 
         raise RuntimeError(f"题目读取失败/缺失，拒绝继续：{missing}")
     if len(problems) < 2:
         raise RuntimeError("可用题目不足 2 道，拒绝继续")
+    selected_ids = sorted(p["problem_id"] for p in problems)
     return problems, {"rule": "sort_unique_id_ascending_take_first_n",
-                      "n_problems": len(problems), "pool_size": len(pool)}
+                      "n_problems": len(problems), "pool_size": len(pool),
+                      "selected_ids_sha16": hashlib.sha256(
+                          ",".join(selected_ids).encode("utf-8")).hexdigest()[:16],
+                      "dataset_revision_used_for_sorting": str(dataset_revision or "not_applicable")}
 
 
 def _freeze_selection_pilot(reader, cfg: dict, d: dict, dataset_revision: str) -> tuple[list[dict], dict]:

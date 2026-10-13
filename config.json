@@ -24,8 +24,8 @@
     "problem_field": "problem",
     "answer_field": "answer",
     "n_problems": 48,
-    "selection_rule": "sort_unique_id_ascending_take_first_n",
-    "selection_note": "按 unique_id 升序取前 n_problems 道；与模型输出无关，不按结果挑题。",
+    "selection_rule": "见 pilot.rule；当 pilot 段存在时 data 段的任何选择说明都不生效",
+    "selection_note": "本配置含 pilot 段，实际选题由 pilot.rule 执行（哈希排序 + 排除已暴露 + 标量金标准筛选）；旧字典序规则仅在无 pilot 段时生效，保留只为历史配置可复现。",
     "n_problems_note": "先导批次目标题量（上限）；实际入组数由 pilot 规则逐层筛选后决定，不足时如实记录 shortfall，不放宽筛选条件。"
   },
   "feedback": {
@@ -34,7 +34,7 @@
   "judge": {
     "numeric_rtol": 1e-06,
     "symbolic": false,
-    "symbolic_note": "符号判分本轮关闭（symbolic=false）；符号分支未在真实数据上验证，环境虽装有 SymPy 也不代表该路径已测。"
+    "symbolic_note": "符号判分本轮关闭（symbolic=false）；符号分支未在真实数据上验证——环境装有 SymPy 也不代表该路径已测。"
   },
   "run": {
     "smoke": {
@@ -43,9 +43,9 @@
     }
   },
   "paths": {
-    "out_dir": "runs/x002_pilot_r07",
+    "out_dir": "runs/x002_pilot_r08",
     "log_name": "records.jsonl",
-    "out_dir_note": "新目录；一次性语义会拒绝覆盖或续跑旧目录（R06 的 runs/x002_smoke 保留只读）。"
+    "out_dir_note": "新目录；一次性语义会拒绝覆盖或续跑旧目录（R06 的 runs/x002_smoke、R07 的 runs/x002_pilot_r07 均保留只读）。"
   },
   "run_protocol_version": "x002-pilot-r07.1",
   "pilot": {
@@ -54,6 +54,7 @@
     "seed": 20261013,
     "exposed_ids_path": "exposed_problems_r06.json",
     "rule": "sha256(protocol|dataset_revision|seed|unique_id|normalized_gold) ascending, take first N",
-    "note": "与模型输出无关的预先确定规则：先排除已暴露题，再只取现行判分支持的标量金标准，再按稳定哈希排序取前 N。"
+    "note": "与模型输出无关的预先确定规则：先排除已暴露题，再只取现行判分支持的标量金标准，再按稳定哈希排序取前 N。",
+    "dataset_revision_source": "运行头记录的**解析后** commit；同一 commit 同时支配读数据、选题排序与运行头；缺失则拒绝继续（不使用空串）"
   }
 }

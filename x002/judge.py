@@ -17,6 +17,12 @@
 范围外一律 **UNKNOWN（不判错）**：带单位、区间、集合、元组/坐标、矩阵、分段函数、
 非法逗号串（``1,2``）、多答案、空盒、抽不出答案、参考答案非标量。
 
+多答案判定使用**完整的候选/答案区域**（不是只看候选紧后面那一行）：
+候选之后到「段落边界（空行）」或「句末标点 + 下一句首字母大写」之间的整段文字，
+只要再出现一个并列/多答案形态的数值（``,`` ``;`` ``、`` ``or`` ``and`` 之后接数值），
+或**同一行内**还有另一个完整数值，就判 UNKNOWN；空行之后的另一段解释里的数字不算第二答案。
+尚未覆盖：候选句本身不含 ``is``/``:`` 的并列数值（如“答案是 2，3”）仍按“抽不出答案”处理。
+
 符号（SymPy）判错路径默认关闭（``judge.symbolic=false``）；本轮环境未安装 SymPy，该分支未验证。
 """
 
@@ -95,28 +101,69 @@ def _clean_tail(s: str) -> str:
 
 _TRAILING_NUMBER_RE = re.compile(r"[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?")
 
+# 句子内的**并列连接词**：`, 2`、`; 3`、`、4`、`or 7`、`and -5`。
+# 只按连接词切开看**紧跟其后的内容**，不看连接词之前的字母（避免把 "so we are done" 这类
+# 结尾词里的字母当成词首，从而误报第二答案）。
+_LIST_CONNECTOR_RE = re.compile(r"[,;、]|\bor\b|\band\b", re.IGNORECASE)
 
-# 列表/并列连接词后紧跟的数值：`or 7`、`or $7`、`, 2`、`,\n2`（同一非法逗号串被换行切开）
-_LIST_CONTINUATION_RE = re.compile(r"(?:,|;|、|\bor\b|\band\b)\s*\$?\s*\d")
+# 句末标点 + 空白 + 下一句首字母大写（含 ``$``/``\`` 开头的数学句）→ 句子边界，不是答案延续
+_SENTENCE_END_RE = re.compile(r"[.!?。！？]\s+(?=[A-Z$\\])")
+# 段落边界：空行（含只有空白的行）
+_PARAGRAPH_END_RE = re.compile(r"\n[ \t]*\n")
+
+
+def _answer_region(body: str, start: int) -> str:
+    """候选位置之后的**答案区域**：到最近的段落边界或句子边界为止。
+
+    这样“候选之后另一段解释里恰好有数字”不会被当成多答案，而同一句里的并列数值会被看见。
+    """
+    rest = body[start:]
+    m = _PARAGRAPH_END_RE.search(rest)
+    if m is None:
+        m = _SENTENCE_END_RE.search(rest)
+    return rest if m is None else rest[: m.start()]
+
+
+def _starts_new_number(text: str) -> bool:
+    """``text`` 是否以**一个新数值的开头**起始（用于区分 ``,2`` 与合法千分位 ``,000``）。
+
+    ``000``（前面是数字或逗号）是千分位分组，不构成新答案；``2``、``2.5``、``\\frac{..}`` 等则是。
+    """
+    t = text.lstrip(" \t\n$\\")          # 允许 ", $2$" / ",\n2" 这类写法
+    if _TRAILING_NUMBER_RE.match(t) is None and re.match(r"(?:frac|dfrac|tfrac)\b", t) is None:
+        return False
+    prev = text[: len(text) - len(t)]     # 被跳过的空白/符号不是数字或逗号时才算"新数值"
+    if prev and prev[-1] in "0123456789,":
+        return False
+    return not re.match(r"^\d{3}(?!\d)", t)   # 恰好 3 位且后面不再跟数字 → 千分位分组
+
+
+def _separator_multi_answer(window: str) -> bool:
+    """连接词之后是否紧跟**另一个数**（合法千分位分组除外）。
+
+    * ``1,000`` / ``1,000,000`` → 分组恰好 3 位数字 → 合法千分位，不是多答案；
+    * ``1,2`` / ``1, 2`` / ``1,\\n2`` / ``1,00`` / ``2.5, or 7`` → 多答案；
+    * ``7, so we are done`` → 连接词后不是数字 → 不是多答案。
+    """
+    for m in _LIST_CONNECTOR_RE.finditer(window):
+        if _starts_new_number(window[m.end():]):
+            return True
+    return False
 
 
 def _has_trailing_number(body: str, start: int) -> bool:
-    """匹配位置之后是否还能读出**另一个候选答案**。
+    """候选之后（**完整答案区域内**）是否还能读出另一个候选答案。
 
-    只针对"并列/多答案"形态，而不是"后续解释里恰好有数字"：
+    数字候选与公式候选使用**同一条**区域规则：
 
-    * 连接词（`,` `;` `、` `or` `and`）之后紧跟数值 —— 包括逗号与数字之间夹了换行
-      （`1,\n2.` 这类同一非法千分位串被换行切开的情形）；
-    * 或**同一段落**内（到空行为止）还存在别的数值 token。
+    * 区域内出现并列形态（连接词之后紧跟数值）→ 多答案（含跨换行）；
+    * 或同一行内还存在别的完整数值 token（``\\boxed{1} or 2`` 这类无逗号并列）。
 
-    因此 `1,2.` / `1, 2.` / `2.5, or 7.` / `$2.5$, or 7.` / `$1$, or $2$.` / `1,\n2.`
-    都会被拒为 UNKNOWN，而 `1,000.`、`1000.`、`7, so we are done` 不受影响；
-    空行之后另一段解释里的数字也不会被当成第二个答案。
+    因此 ``1,2.`` / ``1, 2.`` / ``2.5, or 7.`` / ``$2.5$, or 7.`` / ``$1$, or $2$.`` / ``1,\\n2.``
+    全部拒为 UNKNOWN；而 ``1,000.``、``1000.``、``\\boxed{2}`` 之后换行继续解释不受影响。
     """
-    # 段落边界：连续两个换行视为新段落，之后的内容不再视为答案区域
-    para = re.search(r"\n\s*\n", body[start:])
-    window = body[start : start + (para.start() if para else len(body) - start)]
-    if _LIST_CONTINUATION_RE.search(window):
+    window = _answer_region(body, start)
+    if _separator_multi_answer(window):
         return True
     line_end = window.find("\n")
     same_line = window if line_end == -1 else window[:line_end]
@@ -129,35 +176,42 @@ def extract_answer(text: str) -> tuple[str | None, str]:
         return None, "empty_response"
     body = text
 
-    boxes: list[str] = []
+    boxes: list[dict] = []
     for m in _BOXED_RE.finditer(body):
         inner = _match_brace(body, m.end() - 1)
         if inner is not None:
-            boxes.append(_clean_tail(_strip_latex_wrappers(inner)))
+            boxes.append({"inner": inner, "end": m.end() + len(inner) + 1, "empty": inner.strip() == ""})
     if boxes:
-        if any(b == "" for b in boxes):
+        if any(b["empty"] for b in boxes):
             return None, "empty_box"
-        cands = set(boxes)
+        cands = {_clean_tail(_strip_latex_wrappers(b["inner"])) for b in boxes}
         if len(cands) > 1:
             return None, f"multiple_boxed:{len(cands)}"
+        # 盒子里只有一个值，但盒后同一答案区域内还有别的候选（`\boxed{1}, or 2`）→ 多答案
+        if any(_has_trailing_number(body, b["end"]) for b in boxes):
+            return None, "multiple_boxed_after_box"
         return cands.pop(), "boxed"
 
-    hashes = [_clean_tail(_strip_latex_wrappers(h)) for h in _HASH_RE.findall(body)]
-    hashes = [h for h in hashes if h]
+    hashes: list[dict] = []
+    for m in _HASH_RE.finditer(body):
+        cleaned = _clean_tail(_strip_latex_wrappers(m.group(1)))
+        if cleaned:
+            hashes.append({"cleaned": cleaned, "end": m.end()})
     if hashes:
-        cands = set(hashes)
+        cands = {h["cleaned"] for h in hashes}
         if len(cands) > 1:
             return None, f"multiple_hash:{len(cands)}"
+        if any(_has_trailing_number(body, h["end"]) for h in hashes):
+            return None, "multiple_hash_after_hash"
         return cands.pop(), "hash"
 
     sents: list[str] = []
     for m in _SENT_RE.finditer(body):
         raw = m.group("num") or m.group("math") or ""
-        if m.group("num") and _has_trailing_number(body, m.end()):
-            # 形如 "1,2." / "1, 2." / "2.5, or 7."：抽到的是数字前缀或存在多答案 → 不收候选
-            continue
-        if m.group("math") and _has_trailing_number(body, m.end()):
-            # 公式答案同样处理：`$2.5$, or 7.` / `$1$, or $2$.` → 多答案 → 不收候选
+        if _has_trailing_number(body, m.end()):
+            # 数字候选与公式候选走**同一条**答案区域规则：
+            # "1,2." / "1, 2." / "2.5, or 7." / "$2.5$, or 7." / "$1$, or $2$." / "1,\n2."
+            # → 多答案/非法逗号串 → 不收候选（UNKNOWN）
             continue
         cleaned = _clean_tail(_strip_latex_wrappers(raw))
         if cleaned:

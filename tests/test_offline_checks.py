@@ -932,12 +932,302 @@ class TestPilotEntryPointMock(unittest.TestCase):
             self.assertEqual(sel["layers"]["scalar_candidates"], 3)
             self.assertEqual(sel["layers"]["target"], 2)
             self.assertEqual(sel["n_problems"], 2)
+            # 实际数据 commit 必须同时支配读数据、选题排序与运行头（真实入口，非只测 pilot 函数）
+            self.assertEqual(header["dataset"]["revision"], "data-rev-9")
+            self.assertEqual(sel["dataset_revision_used_for_sorting"], "data-rev-9")
+            self.assertEqual(sel["dataset_revision_used_for_sorting"], header["dataset"]["revision"])
+            self.assertTrue(sel["selected_ids_sha16"])
+            self.assertIsNotNone(header["code_version"])
             selected_ids = [p["problem_id"] for p in header["problems"]]
             self.assertNotIn("p1", selected_ids, "已暴露题必须被排除")
             self.assertNotIn("p3", selected_ids, "非标量金标准必须被筛除")
             self.assertEqual(len(selected_ids), 2, "入组数应等于 target")
             summary = _read_json(os.path.join(h.out_dir, "summary.json"))
             self.assertNotIn("95%CI", R.format_summary(summary))
+
+
+class TestPlanDenominators(unittest.TestCase):
+    """摘要必须从运行头导出完整入组分母（四类情况）。"""
+
+    def _rec(self, pid, stage, arm="none", status="correct", rs="completed"):
+        return {"kind": "record", "problem_id": pid, "stage": stage, "arm": arm,
+                "run_status": rs, "judge": {"status": status}, "usage": {}, "seconds": 0.0}
+
+    def _header(self, ids):
+        return {"kind": "run", "problems": [{"problem_id": i} for i in ids],
+                "run_protocol_version": "x002-pilot-r07.1", "selection": {"layers": {"pool_total": 500}}}
+
+    def test_first_round_interrupted(self):
+        """首轮中断：入组分母来自运行头，缺失与"已记录但 UNKNOWN"分开。"""
+        recs = [self._header(["p1", "p2", "p3"]),
+                self._rec("p1", "first", status="incorrect"),
+                self._rec("p2", "first", status="undetermined")]
+        s = R.summarize(recs)
+        plan = s["plan_denominators"]
+        self.assertEqual(plan["n_enrolled"], 3)
+        self.assertEqual(plan["enrolled_ids"], ["p1", "p2", "p3"])
+        self.assertEqual(plan["n_first_recorded"], 2)
+        self.assertEqual(plan["first_missing_ids"], ["p3"])
+        self.assertEqual(plan["n_first_missing"], 1)
+        self.assertEqual(plan["first_bucket_ids"]["undetermined"], ["p2"])
+        self.assertEqual(plan["first_bucket_ids"]["incorrect"], ["p1"])
+        self.assertNotIn("p2", plan["first_missing_ids"], "已记录但 UNKNOWN 的题不是缺失")
+        self.assertEqual(s["second_round_plan"]["per_arm"]["A_prior_visible"]["planned"], 1)
+        self.assertEqual(s["second_round_plan"]["per_arm"]["A_prior_visible"]["missing"], 1)
+
+    def test_one_arm_missing(self):
+        recs = [self._header(["p1", "p2"]),
+                self._rec("p1", "first", status="incorrect"),
+                self._rec("p2", "first", status="incorrect"),
+                self._rec("p1", "second", arm="A_prior_visible", status="correct")]
+        s = R.summarize(recs)
+        a = s["second_round_plan"]["per_arm"]["A_prior_visible"]
+        b = s["second_round_plan"]["per_arm"]["B_prior_hidden"]
+        self.assertEqual((a["planned"], a["recorded"], a["missing"]), (2, 1, 1))
+        self.assertEqual((b["planned"], b["recorded"], b["missing"]), (2, 0, 2))
+        self.assertEqual(b["missing_ids"], ["p1", "p2"])
+        self.assertEqual(s["determinate_pairs"]["n_pairs"], 0)
+        text = R.format_summary(s)
+        self.assertIn("B_prior_hidden: 计划=2 已记录=0 正常完成=0 已记录但UNKNOWN=0 缺失=2", text)
+        self.assertIn("缺失 ID=['p1', 'p2']", text)
+
+    def test_both_arms_present_but_undetermined(self):
+        recs = [self._header(["p1"]), self._rec("p1", "first", status="incorrect"),
+                self._rec("p1", "second", arm="A_prior_visible", status="undetermined"),
+                self._rec("p1", "second", arm="B_prior_hidden", status="correct")]
+        s = R.summarize(recs)
+        self.assertEqual(s["determinate_pairs"]["n_pairs"], 0)
+        self.assertEqual(s["excluded_from_pairs"][0]["reason"], "non_determinate:unknown/completed")
+        for arm in R.ARMS:
+            st = s["second_round_plan"]["per_arm"][arm]
+            self.assertEqual((st["planned"], st["recorded"], st["missing"]), (1, 1, 0))
+            self.assertEqual(st["completed"], 1 if arm == R.ARMS[1] else 0)
+            self.assertEqual(st["unknown_but_recorded"], 0 if arm == R.ARMS[1] else 1)
+        # 已记录但 UNKNOWN / 正常完成的题都不算"缺失"
+        text = R.format_summary(s)
+        self.assertNotIn("缺失 ID=", text)
+
+    def test_eligible_never_recorded_first_round_is_not_assumed(self):
+        """首轮未记录的题不能假定会进第二轮：分母只数"已记录且判错"。"""
+        recs = [self._header(["p1", "p2", "p3"]), self._rec("p1", "first", status="incorrect")]
+        s = R.summarize(recs)
+        self.assertEqual(s["second_round_plan"]["n_planned"], 1)
+        self.assertEqual(s["second_round_plan"]["planned_ids"], ["p1"])
+        self.assertEqual(s["plan_denominators"]["first_missing_ids"], ["p2", "p3"])
+
+    def test_no_header_marks_denominator_unknown(self):
+        recs = [self._rec("p1", "first", status="incorrect"),
+                self._rec("p1", "second", arm="A_prior_visible", status="correct"),
+                self._rec("p1", "second", arm="B_prior_hidden", status="incorrect")]
+        s = R.summarize(recs)
+        plan = s["plan_denominators"]
+        self.assertIsNone(plan["n_enrolled"])
+        self.assertIsNone(plan["n_first_missing"])
+        self.assertIsNone(plan["first_missing_ids"])
+        self.assertEqual(plan["source"], "no_header")
+        self.assertIn("未知", R.format_summary(s))
+        self.assertIn("不得用已记录数冒充入组数", plan["note"])
+
+    def test_json_and_text_agree_on_denominators(self):
+        recs = [self._header(["p1", "p2"]), self._rec("p1", "first", status="incorrect")]
+        s = R.summarize(recs)
+        text = R.format_summary(s)
+        plan = s["plan_denominators"]
+        self.assertIn(f"入组数: {plan['n_enrolled']}", text)
+        self.assertIn(f"首轮缺失: {plan['n_first_missing']}", text)
+        self.assertIn("p2", text)
+        self.assertIn(f"计划做题数（合格错题）: {s['second_round_plan']['n_planned']}", text)
+        for arm, st in s["second_round_plan"]["per_arm"].items():
+            self.assertIn(f"{arm}: 计划={st['planned']} 已记录={st['recorded']}", text)
+
+
+class TestHeaderIdentityFields(unittest.TestCase):
+    """运行头必须记录协议版本、实际数据 commit、源码版本与排除清单摘要。"""
+
+    def test_header_records_protocol_commit_and_code_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            h = EntryHarness(tmp)
+            rc, out, err = h.run(total_seconds=2700)
+            self.assertEqual(rc, 0, err)
+            header = R.Store(os.path.join(h.out_dir, "records.jsonl")).header()
+            self.assertEqual(header["run_protocol_version"], "x002-pilot-r07.1")
+            self.assertEqual(header["dataset"]["revision"], "data-rev-9")   # 解析后的实际 commit
+            self.assertIsNotNone(header["code_version"])
+            self.assertIn("files_sha16", header["code_version"])
+            sel = header["selection"]
+            self.assertEqual(sel["dataset_revision_used_for_sorting"], "data-rev-9")
+            self.assertTrue(sel["selected_ids_sha16"])
+
+    def test_pilot_requires_resolved_commit(self):
+        """拿不到数据 commit 时，先导选题必须拒绝继续，而不是用空串排序。"""
+        from x002 import worker as W
+
+        class Rdr:
+            def list_ids(self):
+                return ["p1", "p2"]
+
+            def list_rows(self):
+                return [{"unique_id": "p1", "gold": "1"}, {"unique_id": "p2", "gold": "2"}]
+
+            def get(self, pid):
+                return {"problem": f"题 {pid}", "gold": "1"}
+
+        cfg = {"data": {"revision": None}, "pilot": {"max_problems": 2, "seed": 1}}
+        with self.assertRaises(RuntimeError):
+            W.freeze_selection(Rdr(), cfg, dataset_revision=None)
+        problems, sel = W.freeze_selection(Rdr(), cfg, dataset_revision="commit-abc")
+        self.assertEqual(sel["dataset_revision_used_for_sorting"], "commit-abc")
+        self.assertEqual(len(problems), 2)
+
+    def test_real_reader_gets_same_commit_and_selection_header_binds_it(self):
+        """真实入口（DatasetReader + run_attempt）的接线核验，而不只测 pilot 函数。
+
+        用 ``datasets.load_dataset`` 的替身记录**实际传入的 revision**，并核对
+        ``freeze_selection`` 收到的 commit 与之相同、且同值写进运行头。
+        """
+        from x002 import worker as W
+
+        calls = []
+
+        class FakeDataset(list):
+            pass
+
+        def fake_load_dataset(dataset_id, split=None, revision=None, **kw):
+            calls.append({"dataset_id": dataset_id, "split": split, "revision": revision})
+            return FakeDataset([
+                {"unique_id": "p1", "problem": "求 1+1 的值。", "answer": "2", "subject": "algebra", "level": 1},
+                {"unique_id": "p2", "problem": "求 2+2 的值。", "answer": "4", "subject": "algebra", "level": 1},
+                {"unique_id": "p3", "problem": "求 3+3 的值。", "answer": "6", "subject": "geometry", "level": 2},
+            ])
+
+        fake_datasets = types.ModuleType("datasets")
+        fake_datasets.load_dataset = fake_load_dataset
+        seen = {}
+        real_freeze = W.freeze_selection
+
+        def spy_freeze(reader, cfg, dataset_revision=None):
+            seen["revision"] = dataset_revision
+            return real_freeze(reader, cfg, dataset_revision=dataset_revision)
+
+        saved = sys.modules.get("datasets")
+        sys.modules["datasets"] = fake_datasets
+        W.freeze_selection = spy_freeze
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg = {
+                    "model": {"path_or_id": "fake/model"}, "generation": {"seed": 3},
+                    "data": {"dataset_id": "fake/data", "split": "test", "revision": None,
+                             "problem_field": "problem", "answer_field": "answer", "n_problems": 2},
+                    "feedback": {"text": FEEDBACK}, "judge": {"numeric_rtol": 1e-6, "symbolic": False},
+                    "paths": {"out_dir": os.path.join(tmp, "out"), "log_name": "records.jsonl"},
+                    "run_protocol_version": "x002-pilot-r07.1",
+                    "pilot": {"protocol_version": "x002-pilot-r07.1", "max_problems": 2, "seed": 20261013},
+                }
+                W.load_offline_fixture(_write(os.path.join(tmp, "fixture.json"), {
+                    "model": {"path_or_id": "fake/model", "revision": "model-rev-1", "resolved_from": "fixture"},
+                    "dataset": {"dataset_id": "fake/data", "split": "test", "revision": "data-rev-9",
+                                "resolved_from": "fixture"},
+                    "env": {"python": "3.x", "platform": "offline-fixture"},
+                }))
+                try:
+                    reader = W.DatasetReader(cfg, {"dataset_id": "fake/data", "split": "test",
+                                                   "revision": "data-rev-9"})
+                    problems, selection = W.freeze_selection(reader, cfg, dataset_revision="data-rev-9")
+                    header = W.build_run_header(cfg, {"revision": "model-rev-1"}, {"revision": "data-rev-9"},
+                                                selection, problems, 60, cfg["paths"]["out_dir"])
+                finally:
+                    W.load_offline_fixture(None)
+                    W.freeze_selection = real_freeze
+        finally:
+            if saved is None:
+                sys.modules.pop("datasets", None)
+            else:
+                sys.modules["datasets"] = saved
+
+        self.assertEqual(calls[0]["revision"], "data-rev-9", "读数据必须用解析后的 commit")
+        self.assertEqual(seen["revision"], "data-rev-9", "选题排序必须收到同一个 commit")
+        self.assertEqual(header["dataset"]["revision"], "data-rev-9")
+        self.assertEqual(header["selection"]["dataset_revision_used_for_sorting"], "data-rev-9")
+        self.assertEqual(header["selection"]["dataset_revision_used_for_sorting"],
+                         header["dataset"]["revision"])
+        self.assertEqual(len(problems), 2)
+
+
+class TestJudgeNewCounterexamples(unittest.TestCase):
+    """R08 合并修复：完整候选/答案区域下的多答案与非法逗号串。
+
+    覆盖三类，**不是**只匹配 PI 给出的三个字符串：
+    ① PI 反例（公式分支绕过、换行切开同一非法逗号串）；
+    ② 同规则生成的其它并列形态（无连接词并列、分号、``and``、货币符号、boxed/hash 分支之后）；
+    ③ 必须保持判分能力的正例（合法千分位、单个小数/分数、boxed 497/129、空行后另有解释数字）。
+    """
+
+    # ---- 必须 UNKNOWN：多答案 / 非法逗号串（数字与公式两种候选写法都覆盖）
+    MULTI_ANSWER_UNKNOWN = [
+        ("The answer is 1,2.", "1"),
+        ("The answer is 1, 2.", "1"),
+        ("The answer is 1, 2, and 3.", "1"),
+        ("The answer is 1;\n2.", "1"),
+        ("The final answer is 2.5, or 7.", "2.5"),
+        ("The final answer is $2.5$, or 7.", "2.5"),
+        ("The answer is $1$, or $2$.", "1"),
+        ("The answer is $1$ or $2$.", "1"),
+        ("The answer is 3 and 5.", "3"),
+        ("The answer is 1,\n2.", "1"),
+        ("The answer is \\boxed{1}, or 2.", "1"),
+        ("The answer is \\boxed{2} or 3.", "2"),
+    ]
+
+    # ---- 必须保持 correct：合法标量与"另一段解释里的数字"
+    STILL_CORRECT = [
+        ("The final answer is $5$.", "5"),
+        ("The answer is 1,000.", "1000"),
+        ("The answer is 1,000,000.", "1000000"),
+        ("The answer is 12.5.", "12.5"),
+        ("The answer is 7, so we are done", "7"),
+        ("The answer is $\\frac{1}{2}$.", "0.5"),
+        ("The answer is 2.\n\nWe used 3 steps.", "2"),
+        ("The answer is 2. We used 3 steps.", "2"),
+        ("\\boxed{497}", "497"),
+        ("\\boxed{129}", "129"),
+        ("\\boxed{2}", "2"),
+        ("\\boxed{2}\n\nWe used 3 steps.", "2"),
+        ("#### 2\n3 steps were needed.", "2"),
+    ]
+
+    def test_multi_answer_forms_are_unknown(self):
+        for resp, gold in self.MULTI_ANSWER_UNKNOWN:
+            with self.subTest(resp=resp):
+                out = J.judge(resp, gold)
+                self.assertEqual(out["status"], "undetermined", out)
+                self.assertIsNone(out["extracted"], out)
+
+    def test_supported_single_answers_still_judged(self):
+        for resp, gold in self.STILL_CORRECT:
+            with self.subTest(resp=resp):
+                self.assertEqual(J.judge(resp, gold)["status"], "correct", resp)
+
+    def test_multi_answer_also_rejects_matching_gold(self):
+        """多答案不能因为"其中一个等于 gold"就被判 correct，也不能被当成 incorrect。
+
+        这样它既不会进错题配对，也不会污染正确分子（须为 UNKNOWN）。
+        """
+        for resp, gold in (("The answer is 2, or 3.", "2"),
+                           ("The answer is $4$, or $5$.", "5"),
+                           ("The answer is \\boxed{6}, or 7.", "6"),
+                           ("The answer is 6 and 7.", "6")):
+            with self.subTest(resp=resp):
+                out = J.judge(resp, gold)
+                self.assertEqual(out["status"], "undetermined", out)
+
+    def test_documented_region_limit_blank_line_before_continuation(self):
+        """已知边界（如实记录，不在本批扩范围）：候选句结束后换行再写 ``Or 3``。
+
+        ``2.`` 之后的空行之前没有并列形态，本规则按"该句只有一个候选"处理；
+        这属于"候选之后的另一段文字"，不是本批要修的多答案误判，故不改判分范围。
+        """
+        out = J.judge("The answer is 2.\nWe stop here.", "2")
+        self.assertEqual(out["status"], "correct", out)
 
 
 if __name__ == "__main__":
