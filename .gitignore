@@ -1,17 +1,51 @@
-# 只提交代码/配置/操作说明；以下一律排除
-__pycache__/
-*.pyc
+# Git 只跟踪源码/配置/离线 fixtures/操作说明；以下一律排除（R09 恢复 R07 原始排除集并补齐实际产物）
+#
+# 本地环境与凭据
 .DS_Store
-runs/
-*.log
-offline_checks.log
-console.log
-summary_console.log
-# 模型与数据缓存、密钥、论文材料不应出现在本目录
-*.safetensors
-*.bin
-*.gguf
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+*.pem
+*.key
+
+# 模型、数据缓存与实验输出（留在服务器，不回传进代码版本）
+models/
+checkpoints/
+cache/
 .cache/
 .hf/
-*.key
-*.env
+datasets/
+runs/
+outputs/
+results/
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.gguf
+
+# 日志与离线检查产物（含包装脚本实际写出的 *.log.raw）
+*.log
+*.log.raw
+offline_checks.log*
+console.log*
+summary_console.log*
+
+# 回传文件与归档件
+*.tar.gz
+*.zip
+code_version.txt
+
+# 论文材料/草稿不属于本代码仓库
+paper/
+papers/
+manuscripts/
+*.docx
+*.pdf

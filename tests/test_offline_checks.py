@@ -1162,7 +1162,7 @@ class TestJudgeNewCounterexamples(unittest.TestCase):
     ③ 必须保持判分能力的正例（合法千分位、单个小数/分数、boxed 497/129、空行后另有解释数字）。
     """
 
-    # ---- 必须 UNKNOWN：多答案 / 非法逗号串（数字与公式两种候选写法都覆盖）
+    # ---- 必须 UNKNOWN：多答案 / 非法逗号串（一位数与三位数、裸数字/公式/boxed/hash 都覆盖）
     MULTI_ANSWER_UNKNOWN = [
         ("The answer is 1,2.", "1"),
         ("The answer is 1, 2.", "1"),
@@ -1176,9 +1176,22 @@ class TestJudgeNewCounterexamples(unittest.TestCase):
         ("The answer is 1,\n2.", "1"),
         ("The answer is \\boxed{1}, or 2.", "1"),
         ("The answer is \\boxed{2} or 3.", "2"),
+        # 跨行三位数备选值：三位数不是千分位分组，必须按多答案处理（R09 PI 反例）
+        ("The answer is 2,\nor 123.", "2"),
+        ("The answer is 2,\n123.", "2"),
+        ("The answer is \\boxed{2},\nor 123.", "2"),
+        ("The answer is 2,\nand 123.", "2"),
+        ("The answer is 2,\n$123.", "2"),
+        ("The answer is 2,\n13.", "2"),
+        # 句末换行后的并列延续（R09 PI 反例）
+        ("The answer is 2.\nOr 3.", "2"),
+        ("The answer is 2.\nAnd 3.", "2"),
+        ("The answer is 2.\nor 3", "2"),
+        ("The answer is $2$.\nOr 3.", "2"),
+        ("The answer is #### 2\nOr 3.", "2"),
     ]
 
-    # ---- 必须保持 correct：合法标量与"另一段解释里的数字"
+    # ---- 必须保持 correct：合法标量与"后续普通解释里的数字"
     STILL_CORRECT = [
         ("The final answer is $5$.", "5"),
         ("The answer is 1,000.", "1000"),
@@ -1188,10 +1201,17 @@ class TestJudgeNewCounterexamples(unittest.TestCase):
         ("The answer is $\\frac{1}{2}$.", "0.5"),
         ("The answer is 2.\n\nWe used 3 steps.", "2"),
         ("The answer is 2. We used 3 steps.", "2"),
+        # 句末边界必须取最近的一个：后面再补一段说明不改变已结束的答案区域
+        ("The answer is 2. We used 3 terms.\n\nMore discussion.", "2"),
+        ("The answer is 2. We used 3 terms. More discussion follows.", "2"),
+        # 换行后的普通（非并列）说明不是第二答案
+        ("The answer is 2.\nWe checked 3 alternatives.", "2"),
+        ("The answer is 2.\nThis took 3 steps.", "2"),
         ("\\boxed{497}", "497"),
         ("\\boxed{129}", "129"),
         ("\\boxed{2}", "2"),
         ("\\boxed{2}\n\nWe used 3 steps.", "2"),
+        ("\\boxed{2}\nWe checked 3 alternatives.", "2"),
         ("#### 2\n3 steps were needed.", "2"),
     ]
 
@@ -1215,19 +1235,134 @@ class TestJudgeNewCounterexamples(unittest.TestCase):
         for resp, gold in (("The answer is 2, or 3.", "2"),
                            ("The answer is $4$, or $5$.", "5"),
                            ("The answer is \\boxed{6}, or 7.", "6"),
-                           ("The answer is 6 and 7.", "6")):
+                           ("The answer is 6 and 7.", "6"),
+                           ("The answer is 2,\nor 123.", "2"),
+                           ("The answer is 2.\nOr 3.", "2")):
             with self.subTest(resp=resp):
                 out = J.judge(resp, gold)
                 self.assertEqual(out["status"], "undetermined", out)
 
-    def test_documented_region_limit_blank_line_before_continuation(self):
-        """已知边界（如实记录，不在本批扩范围）：候选句结束后换行再写 ``Or 3``。
+    def test_three_digit_value_is_not_treated_as_thousands_fragment(self):
+        """三位数备选值必须按多答案处理；只有**完整合法千分位**才受支持。"""
+        for resp, gold in (("The answer is 2,\nor 123.", "2"),
+                           ("The answer is 2,\n123.", "2"),
+                           ("The answer is \\boxed{2},\nor 123.", "2")):
+            with self.subTest(resp=resp):
+                out = J.judge(resp, gold)
+                self.assertEqual(out["status"], "undetermined", out)
+                self.assertIsNone(out["extracted"], out)
+        for resp, gold in (("The answer is 1,000.", "1000"),
+                           ("The answer is 1,000,000.", "1000000"),
+                           ("\\boxed{1,000}", "1000")):
+            with self.subTest(resp=resp):
+                self.assertEqual(J.judge(resp, gold)["status"], "correct", resp)
 
-        ``2.`` 之后的空行之前没有并列形态，本规则按"该句只有一个候选"处理；
-        这属于"候选之后的另一段文字"，不是本批要修的多答案误判，故不改判分范围。
-        """
-        out = J.judge("The answer is 2.\nWe stop here.", "2")
-        self.assertEqual(out["status"], "correct", out)
+    def test_answer_region_uses_nearest_boundary(self):
+        """区域必须取**最近**边界：远处有没有空行都不能改变已结束的答案判断。"""
+        base = "The answer is 2. We used 3 terms."
+        self.assertEqual(J.judge(base, "2")["status"], "correct")
+        for tail in ("\n\nMore discussion.", "\n\nWe also note 5 other cases.", "\nWe checked 3 alternatives."):
+            with self.subTest(tail=tail):
+                self.assertEqual(J.judge(base + tail, "2")["status"], "correct", base + tail)
+
+    def test_sentence_end_newline_alternative_is_unknown(self):
+        """句末换行后的行首并列连接词（``Or 3``）是备选答案，不是普通说明。"""
+        for resp, gold in (("The answer is 2.\nOr 3.", "2"),
+                           ("The answer is 2.\nOr 3", "2"),
+                           ("The answer is 2.\nAnd 3.", "2"),
+                           ("The answer is 2.\nor 3", "2")):
+            with self.subTest(resp=resp):
+                out = J.judge(resp, gold)
+                self.assertEqual(out["status"], "undetermined", out)
+        # 对照：换行后是普通说明 → 仍是单答案
+        for resp in ("The answer is 2.\nWe used 3 steps.", "The answer is 2.\nWe stop here."):
+            with self.subTest(resp=resp):
+                self.assertEqual(J.judge(resp, "2")["status"], "correct", resp)
+
+
+class TestCodeVersionSourceIdentity(unittest.TestCase):
+    """源码身份只按受控清单计算：合成日志/环境/缓存不参与，受控源码改动必须被发现。"""
+
+    def _cleanup(self, *paths):
+        for p in paths:
+            if os.path.isdir(p):
+                import shutil
+                shutil.rmtree(p, ignore_errors=True)
+            elif os.path.exists(p):
+                os.remove(p)
+
+    def test_manifest_excludes_logs_env_and_cache(self):
+        """在本包内新增被忽略的日志、.venv、模型文件后，源码摘要必须不变。"""
+        before = W.capture_code_version()
+        junk = [os.path.join(ROOT, n) for n in
+                ("offline_checks.log", "offline_checks.log.raw", "code_version.txt",
+                 "console.log", "runs_should_not_matter.tmp")]
+        made_dirs = [os.path.join(ROOT, d) for d in (".venv/bin", "cache", "logs_demo")]
+        try:
+            for p in junk:
+                with open(p, "w", encoding="utf-8") as fh:
+                    fh.write("synthetic ignored artifact\n")
+            for d in made_dirs:
+                os.makedirs(d, exist_ok=True)
+                with open(os.path.join(d, "artifact.bin"), "wb") as fh:
+                    fh.write(b"\x00synthetic cache\x00")
+            after = W.capture_code_version()
+        finally:
+            self._cleanup(*junk, *[os.path.join(ROOT, d) for d in (".venv", "cache", "logs_demo")])
+        self.assertEqual(before["files_sha16"], after["files_sha16"],
+                         "被忽略的日志/环境/缓存不得改变源码摘要")
+        self.assertEqual(before["manifest"], after["manifest"])
+        self.assertTrue(before["coverage"]["manifest_only"])
+        self.assertNotIn("runs", before["manifest"])
+
+    def test_editing_controlled_source_changes_summary(self):
+        """改动受控清单里的源码必须改变摘要（且 dirty 如实反映）。"""
+        target = os.path.join(ROOT, "x002", "prompts.py")
+        with open(target, encoding="utf-8") as fh:
+            original = fh.read()
+        before = W.capture_code_version()
+        try:
+            with open(target, "a", encoding="utf-8") as fh:
+                fh.write("\n# R09 合成改动：仅用于验证受控源码改动会改变摘要\n")
+            after = W.capture_code_version()
+        finally:
+            with open(target, "w", encoding="utf-8") as fh:
+                fh.write(original)
+        self.assertNotEqual(before["files_sha16"], after["files_sha16"])
+        self.assertIn("x002/prompts.py", after["manifest"])
+        self.assertEqual(before["files_sha16"], W.capture_code_version()["files_sha16"],
+                         "恢复原文件后摘要必须复原")
+
+    def test_archive_mode_uses_same_manifest(self):
+        """无 Git 的归档包：同一份清单、来源标 archive、不伪造 commit。"""
+        import shutil
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "run_package")
+            shutil.copytree(ROOT, dest, ignore=shutil.ignore_patterns(
+                ".git", "__pycache__", "*.pyc", "runs", "*.log", "*.log.raw"))
+            code = (
+                "import json,sys;sys.path.insert(0, %r);"
+                "from x002 import worker as W;"
+                "print(json.dumps(W.capture_code_version()))" % dest
+            )
+            proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                                  cwd=tmp, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            info = json.loads(proc.stdout.strip().splitlines()[-1])
+        self.assertEqual(info["source_mode"], "archive")
+        self.assertIsNone(info["git"], "无 Git 时不得伪造 commit")
+        self.assertEqual(info["manifest"], list(W.MANIFEST_PATHS), "两种模式使用同一份清单")
+        self.assertEqual(info["manifest_missing"], [])
+        self.assertEqual(info["manifest_files"], len(W.MANIFEST_PATHS))
+        self.assertTrue(info["files_sha16"])
+
+    def test_git_mode_reports_commit_and_dirty(self):
+        info = W.capture_code_version()
+        if info["source_mode"] != "git":
+            self.skipTest("当前活动包不在 Git 仓库中")
+        self.assertEqual(len(info["git"]), 40, info["git"])
+        self.assertIsInstance(info["dirty"], bool)
+        self.assertEqual(info["manifest_missing"], [])
 
 
 if __name__ == "__main__":

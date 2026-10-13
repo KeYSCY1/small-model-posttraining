@@ -131,39 +131,113 @@ def _dir_fingerprint(path: str) -> str:
 
 _VERSION_PACKAGES = ("torch", "transformers", "datasets", "sympy", "huggingface_hub")
 
+# **受控源码与配置清单**：只有这些路径参与"源码身份"摘要。
+# 运行日志、离线检查产物、虚拟环境、模型/数据缓存、压缩件一律不参与（与 .gitignore 一致）。
+# Git 模式与无 Git 归档模式使用**同一份清单**；两者都额外记录清单覆盖检查（清单中有多少文件实际存在）。
+MANIFEST_PATHS = (
+    ".gitignore",
+    "config.json",
+    "exposed_problems_r06.json",
+    "requirements.txt",
+    "run_offline_checks.sh",
+    "run_worker.py",
+    "README.md",
+    "REVIEW_STATUS.md",
+    "SERVER_SYNC.md",
+    "VERSION_CONTROL.md",
+    "x002/__init__.py",
+    "x002/cli.py",
+    "x002/generator.py",
+    "x002/judge.py",
+    "x002/pilot.py",
+    "x002/prompts.py",
+    "x002/run.py",
+    "x002/worker.py",
+    "tests/fake_backend.py",
+    "tests/test_offline_checks.py",
+)
 
-def capture_code_version() -> dict:
-    """记录**实际源码版本**：Git commit（若有）与工作树是否干净；无 Git 时给出文件摘要。
 
-    不伪造 commit：没有 Git 就只报文件摘要。
-    """
-    import hashlib
+def _git_lines(pkg_dir: str, *args: str) -> list[str] | None:
+    """只读调用 git；失败（无 Git / 非仓库 / 超时）返回 None，不抛异常。"""
     import subprocess
 
-    pkg_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    info: dict = {"git": None, "dirty": None, "files_sha16": None}
     try:
-        commit = subprocess.run(["git", "-C", pkg_dir, "rev-parse", "HEAD"],
-                                capture_output=True, text=True, timeout=5)
-        if commit.returncode == 0:
-            info["git"] = commit.stdout.strip()
-            status = subprocess.run(["git", "-C", pkg_dir, "status", "--porcelain"],
-                                    capture_output=True, text=True, timeout=5)
-            info["dirty"] = bool(status.stdout.strip()) if status.returncode == 0 else None
+        out = subprocess.run(["git", "-C", pkg_dir, *args],
+                             capture_output=True, text=True, timeout=5)
     except Exception:
-        pass
-    h = hashlib.sha256()
-    for root, dirs, files in os.walk(pkg_dir):
-        dirs[:] = [d for d in sorted(dirs) if d not in ("__pycache__", ".git", "runs")]
-        for name in sorted(files):
-            if name.endswith(".pyc") or name == ".DS_Store":
-                continue
-            fp = os.path.join(root, name)
-            rel = os.path.relpath(fp, pkg_dir)
-            h.update(rel.encode())
-            with open(fp, "rb") as fh:
-                h.update(hashlib.sha256(fh.read()).hexdigest().encode())
-    info["files_sha16"] = h.hexdigest()[:16]
+        return None
+    if out.returncode != 0:
+        return None
+    if "-z" in args:
+        return [p for p in out.stdout.split("\0") if p]
+    return [ln.strip() for ln in out.stdout.split("\n") if ln.strip()]
+
+
+def capture_code_version() -> dict:
+    """记录**实际源码版本**：Git commit/工作树状态，以及**只按受控清单**计算的源码摘要。
+
+    * 摘要只读受控源码与配置（``MANIFEST_PATHS``）：不递归扫描日志、``.venv``、模型或数据缓存，
+      也不读 ``runs/``；新增运行日志或被忽略的环境文件**不会**改变源码摘要。
+    * 已跟踪代码的改动必须能被发现：Git 模式下摘要覆盖 ``git ls-files``（含被改动的已跟踪文件），
+      并且 ``dirty`` 如实记录 ``git status --porcelain``（含未跟踪的非忽略文件）。
+    * 无 Git 的归档包：读清单里实际存在的文件；此时摘要会包含已修改但未提交的内容，
+      因此报告里同时给出 ``source_mode`` 与 ``manifest_missing``，不把两种模式说成同一件事。
+    """
+    import hashlib
+
+    pkg_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    info: dict = {
+        "source_mode": None,        # "git" | "archive"
+        "git": None,
+        "dirty": None,
+        "files_sha16": None,
+        "manifest": list(MANIFEST_PATHS),
+        "manifest_files": 0,
+        "manifest_missing": [],
+        "manifest_sha16": hashlib.sha256(
+            "\n".join(MANIFEST_PATHS).encode("utf-8")).hexdigest()[:16],
+        "coverage": {
+            "manifest_only": True,
+            "excludes": ["日志", "runs/ 运行输出", "虚拟环境", "模型与数据缓存", "压缩件"],
+        },
+        "note": "源码摘要只按受控源码/配置清单计算；运行日志、环境、缓存与权重不参与。",
+    }
+    tracked: list[str] | None = None
+    if _git_lines(pkg_dir, "rev-parse", "--git-dir") is not None:
+        commit = _git_lines(pkg_dir, "rev-parse", "HEAD")
+        info["git"] = commit[0] if commit else None
+        status = _git_lines(pkg_dir, "status", "--porcelain")
+        info["dirty"] = bool(status) if status is not None else None
+        tracked = _git_lines(pkg_dir, "ls-files", "-z")
+        if tracked is not None:
+            tracked = sorted(tracked)
+    manifest = set(MANIFEST_PATHS)
+    if tracked is not None:
+        info["source_mode"] = "git"
+        paths = sorted(p for p in tracked if p in manifest)
+        tracked_outside = sorted(p for p in tracked if p not in manifest)
+        if tracked_outside:
+            info["tracked_outside_manifest"] = tracked_outside
+        info["manifest_files"] = len(paths)
+        info["manifest_missing"] = sorted(manifest - set(tracked))
+    else:
+        info["source_mode"] = "archive"
+        paths = [p for p in MANIFEST_PATHS if os.path.isfile(os.path.join(pkg_dir, p))]
+        info["manifest_files"] = len(paths)
+        info["manifest_missing"] = sorted(manifest - set(paths))
+
+    digest = hashlib.sha256()
+    for rel in paths:
+        fp = os.path.join(pkg_dir, rel)
+        if not os.path.isfile(fp):
+            continue
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\0")
+        with open(fp, "rb") as fh:
+            digest.update(hashlib.sha256(fh.read()).hexdigest().encode("utf-8"))
+        digest.update(b"\n")
+    info["files_sha16"] = digest.hexdigest()[:16]
     return info
 
 

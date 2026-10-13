@@ -101,48 +101,76 @@ def _clean_tail(s: str) -> str:
 
 _TRAILING_NUMBER_RE = re.compile(r"[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?")
 
-# 句子内的**并列连接词**：`, 2`、`; 3`、`、4`、`or 7`、`and -5`。
-# 只按连接词切开看**紧跟其后的内容**，不看连接词之前的字母（避免把 "so we are done" 这类
-# 结尾词里的字母当成词首，从而误报第二答案）。
+# 句子内的**并列连接词**：`, 123`、`; 3`、`、4`、`or 7`、`and -5`。
 _LIST_CONNECTOR_RE = re.compile(r"[,;、]|\bor\b|\band\b", re.IGNORECASE)
 
-# 句末标点 + 空白 + 下一句首字母大写（含 ``$``/``\`` 开头的数学句）→ 句子边界，不是答案延续
+# 句末标点 + 空白（含换行）+ 下一句首字母大写或数学式开头 → 句子边界
 _SENTENCE_END_RE = re.compile(r"[.!?。！？]\s+(?=[A-Z$\\])")
 # 段落边界：空行（含只有空白的行）
 _PARAGRAPH_END_RE = re.compile(r"\n[ \t]*\n")
+# **行首**并列连接词（`\nOr 3`）：是备选答案的延续，不构成句子边界
+_LINE_CONTINUATION_RE = re.compile(r"(?m)^[ \t]*(?:or|and)\b", re.IGNORECASE)
 
 
 def _answer_region(body: str, start: int) -> str:
-    """候选位置之后的**答案区域**：到最近的段落边界或句子边界为止。
+    """候选位置之后的**答案区域**：取**最近**的边界，而不是只要后面有空行就一律放到空行。
 
-    这样“候选之后另一段解释里恰好有数字”不会被当成多答案，而同一句里的并列数值会被看见。
+    边界 = 空行，或「句末标点 + 空白 + 下一句首字母大写/数学式」——但**行首并列连接词**
+    （``\\nOr 3``）不算边界，那是备选答案的延续，必须留在区域内被多答案规则看到。
+
+    这样 ``The answer is 2. We used 3 terms.`` 与后面再加一段说明的文字给出**同一个**答案区域
+    （区域止于 ``2.`` 之后的句末边界），而 ``The answer is 2.\\nOr 3.`` 会把 ``Or 3`` 留在区域内。
     """
-    rest = body[start:]
-    m = _PARAGRAPH_END_RE.search(rest)
-    if m is None:
-        m = _SENTENCE_END_RE.search(rest)
-    return rest if m is None else rest[: m.start()]
+    if start >= len(body):
+        return ""
+    span = body[start:]
+    end = len(span)
+    s_match = _SENTENCE_END_RE.search(span)
+    while s_match is not None:
+        after = span[s_match.end():]
+        if _LINE_CONTINUATION_RE.match(after):
+            # 只是行首并列连接词的延续：从它之后继续找真正的边界，同时不把它切掉
+            s_match = _SENTENCE_END_RE.search(span, s_match.end())
+            continue
+        end = min(end, s_match.start())
+        break
+    p_match = _PARAGRAPH_END_RE.search(span)
+    if p_match is not None:
+        end = min(end, p_match.start())
+    return span[:end]
 
 
 def _starts_new_number(text: str) -> bool:
-    """``text`` 是否以**一个新数值的开头**起始（用于区分 ``,2`` 与合法千分位 ``,000``）。
+    """``text`` 是否以**新数值**开头（区分 ``,123`` 与合法千分位分组 ``,000``）。
 
-    ``000``（前面是数字或逗号）是千分位分组，不构成新答案；``2``、``2.5``、``\\frac{..}`` 等则是。
+    * ``1,000``：逗号前是数字、后面正好 3 位数字且不再跟数字 → 千分位分组，**不是**新答案；
+    * ``,123`` / ``, 123`` / ``,\\n123`` / ``or 123`` / ``,$123$``：新数值 → 多答案；
+    * ``.`` / ``so we are done`` / 空 → 不是数值。
     """
-    t = text.lstrip(" \t\n$\\")          # 允许 ", $2$" / ",\n2" 这类写法
-    if _TRAILING_NUMBER_RE.match(t) is None and re.match(r"(?:frac|dfrac|tfrac)\b", t) is None:
+    stripped = text.lstrip(" \t\n$\\")
+    if stripped != text and stripped[:1].isdigit():
+        return True                                   # 空白/换行/公式符之后直接是数字
+    if not stripped:
         return False
-    prev = text[: len(text) - len(t)]     # 被跳过的空白/符号不是数字或逗号时才算"新数值"
-    if prev and prev[-1] in "0123456789,":
+    if re.match(r"(?:frac|dfrac|tfrac)\b", stripped):
+        return True
+    if not stripped[:1].isdigit():
         return False
-    return not re.match(r"^\d{3}(?!\d)", t)   # 恰好 3 位且后面不再跟数字 → 千分位分组
+    comma = re.match(r"[,;、][ \t]*", stripped)        # ``, 123`` / ``,123``
+    if comma:
+        after = re.sub(r"\s+", "", stripped[comma.end():])
+        return not (stripped[:1] == "," and re.fullmatch(r"\d{3}", after))
+    prev = text[len(text) - len(stripped) - 1] if len(stripped) < len(text) else ""
+    if prev.isdigit() or prev in ",;、":
+        return False                                  # ``,000``：紧跟在数字/逗号后的三位分组
+    return True
 
 
 def _separator_multi_answer(window: str) -> bool:
     """连接词之后是否紧跟**另一个数**（合法千分位分组除外）。
 
-    * ``1,000`` / ``1,000,000`` → 分组恰好 3 位数字 → 合法千分位，不是多答案；
-    * ``1,2`` / ``1, 2`` / ``1,\\n2`` / ``1,00`` / ``2.5, or 7`` → 多答案；
+    * ``1,000`` → 分组恰好 3 位数字 → 合法千分位，不是多答案；
+    * ``2,\\n123`` / ``2,\\nor 123`` / ``1, 2`` / ``2.5, or 7`` → 多答案；
     * ``7, so we are done`` → 连接词后不是数字 → 不是多答案。
     """
     for m in _LIST_CONNECTOR_RE.finditer(window):
@@ -154,13 +182,13 @@ def _separator_multi_answer(window: str) -> bool:
 def _has_trailing_number(body: str, start: int) -> bool:
     """候选之后（**完整答案区域内**）是否还能读出另一个候选答案。
 
-    数字候选与公式候选使用**同一条**区域规则：
+    数字、公式、``\\boxed{}``、``####`` 四类候选使用**同一条**区域规则：
 
-    * 区域内出现并列形态（连接词之后紧跟数值）→ 多答案（含跨换行）；
-    * 或同一行内还存在别的完整数值 token（``\\boxed{1} or 2`` 这类无逗号并列）。
+    * 区域内出现并列形态（连接词之后紧跟数值，含跨换行）→ 多答案；
+    * 或同一行内还存在别的完整数值 token。
 
-    因此 ``1,2.`` / ``1, 2.`` / ``2.5, or 7.`` / ``$2.5$, or 7.`` / ``$1$, or $2$.`` / ``1,\\n2.``
-    全部拒为 UNKNOWN；而 ``1,000.``、``1000.``、``\\boxed{2}`` 之后换行继续解释不受影响。
+    因此 ``2,\\nor 123`` / ``2,\\n123`` / ``\\boxed{2},\\nor 123`` / ``2.\\nOr 3.`` / ``1,2`` /
+    ``$2.5$, or 7.`` 全部拒为 UNKNOWN；而 ``1,000.``、``\\boxed{2}`` 之后换行继续解释不受影响。
     """
     window = _answer_region(body, start)
     if _separator_multi_answer(window):
