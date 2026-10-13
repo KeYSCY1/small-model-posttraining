@@ -1,7 +1,7 @@
 # X-002 AIME 2024 目标机运行与 Git 同步（当前唯一操作正文）
 
 私有仓库：https://github.com/KeYSCY1/small-model-posttraining
-**状态：AIME 2024 先导待 PI 发布；本节给出的步骤尚未获得可运行 commit/tag。**
+**状态：R12工程已通过PI审阅，但AIME题单含已确认源题误写aime24:88，待R13剔除后发布。当前配置仍含该题，下列步骤暂不执行生成，尚无AIME可运行commit/tag。**
 仓库根就是运行包，不复制单个文件。以下命令在 Linux 目标机由用户手动执行，**一次**完成。
 
 ## 1 获取 PI 指定的版本
