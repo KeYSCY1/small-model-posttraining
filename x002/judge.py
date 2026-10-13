@@ -96,15 +96,31 @@ def _clean_tail(s: str) -> str:
 _TRAILING_NUMBER_RE = re.compile(r"[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?")
 
 
-def _has_trailing_number(body: str, start: int) -> bool:
-    """匹配位置之后、同一行内是否还存在别的数值 token。
+# 列表/并列连接词后紧跟的数值：`or 7`、`or $7`、`, 2`、`,\n2`（同一非法逗号串被换行切开）
+_LIST_CONTINUATION_RE = re.compile(r"(?:,|;|、|\bor\b|\band\b)\s*\$?\s*\d")
 
-    用于拒绝"数字前缀"式抽取：`1,2.`、`1, 2.`、`2.5, or 7.` 都会因此返回 UNKNOWN，
-    而 `1,000.`、`1000.`、`7, so we are done` 不受影响（逗号后紧跟数字才被算作新数值）。
+
+def _has_trailing_number(body: str, start: int) -> bool:
+    """匹配位置之后是否还能读出**另一个候选答案**。
+
+    只针对"并列/多答案"形态，而不是"后续解释里恰好有数字"：
+
+    * 连接词（`,` `;` `、` `or` `and`）之后紧跟数值 —— 包括逗号与数字之间夹了换行
+      （`1,\n2.` 这类同一非法千分位串被换行切开的情形）；
+    * 或**同一段落**内（到空行为止）还存在别的数值 token。
+
+    因此 `1,2.` / `1, 2.` / `2.5, or 7.` / `$2.5$, or 7.` / `$1$, or $2$.` / `1,\n2.`
+    都会被拒为 UNKNOWN，而 `1,000.`、`1000.`、`7, so we are done` 不受影响；
+    空行之后另一段解释里的数字也不会被当成第二个答案。
     """
-    line_end = body.find("\n", start)
-    tail = body[start : line_end if line_end != -1 else len(body)]
-    return _TRAILING_NUMBER_RE.search(tail) is not None
+    # 段落边界：连续两个换行视为新段落，之后的内容不再视为答案区域
+    para = re.search(r"\n\s*\n", body[start:])
+    window = body[start : start + (para.start() if para else len(body) - start)]
+    if _LIST_CONTINUATION_RE.search(window):
+        return True
+    line_end = window.find("\n")
+    same_line = window if line_end == -1 else window[:line_end]
+    return _TRAILING_NUMBER_RE.search(same_line) is not None
 
 
 def extract_answer(text: str) -> tuple[str | None, str]:
@@ -139,6 +155,9 @@ def extract_answer(text: str) -> tuple[str | None, str]:
         raw = m.group("num") or m.group("math") or ""
         if m.group("num") and _has_trailing_number(body, m.end()):
             # 形如 "1,2." / "1, 2." / "2.5, or 7."：抽到的是数字前缀或存在多答案 → 不收候选
+            continue
+        if m.group("math") and _has_trailing_number(body, m.end()):
+            # 公式答案同样处理：`$2.5$, or 7.` / `$1$, or $2$.` → 多答案 → 不收候选
             continue
         cleaned = _clean_tail(_strip_latex_wrappers(raw))
         if cleaned:

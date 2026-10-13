@@ -131,7 +131,9 @@ def bootstrap_ci(diffs: list[float], n_boot: int = 5000, alpha: float = 0.05, se
 
 
 def summarize(records: Iterable[dict]) -> dict:
-    recs = [r for r in records if r.get("kind") != "run"]
+    all_rows = list(records)
+    header = next((r for r in all_rows if r.get("kind") == "run"), None)
+    recs = [r for r in all_rows if r.get("kind") != "run"]
     first = [r for r in recs if r.get("stage") == "first"]
     second = [r for r in recs if r.get("stage") == "second"]
 
@@ -183,9 +185,60 @@ def summarize(records: Iterable[dict]) -> dict:
         pairs.append({"problem_id": pid, "A_correct": va, "B_correct": vb})
         diffs.append(va - vb)
 
-    mean, lo, hi = bootstrap_ci(diffs) if diffs else (None, None, None)
+    # 运行头导出的**入组分母**：没有运行头时明确标未核，不用已记录数冒充入组数
+    if header is None:
+        plan = {
+            "source": "no_header",
+            "n_enrolled": None,
+            "enrolled_ids": None,
+            "note": "运行头缺失：入组分母未知（不得用已记录数冒充入组数）",
+        }
+    else:
+        enrolled = [p["problem_id"] for p in header.get("problems", [])]
+        plan = {
+            "source": "run_header",
+            "n_enrolled": len(enrolled),
+            "enrolled_ids": enrolled,
+            "protocol_version": header.get("run_protocol_version"),
+            "selection": header.get("selection"),
+            "code_version": header.get("code_version"),
+            "feedback_sha16": header.get("feedback_sha16"),
+        }
+
+    recorded_first_ids = sorted({r["problem_id"] for r in first})
+    plan["n_first_recorded"] = len(recorded_first_ids)
+    plan["first_recorded_ids"] = recorded_first_ids
+    if plan["n_enrolled"] is not None:
+        plan["first_missing_ids"] = sorted(set(plan["enrolled_ids"]) - set(recorded_first_ids))
+        plan["n_first_missing"] = len(plan["first_missing_ids"])
+        plan["note"] = "入组来自运行头；缺失 = 入组但未记录（不是答错）"
+    else:
+        plan["first_missing_ids"] = None
+        plan["n_first_missing"] = None
+
+    # 各臂计划数 = 首轮已记录的合格错题（未记录的首轮题不能被假定会进第二轮）
+    arm_plan = {
+        "plan_basis": "首轮已记录且判错（首轮未记录的题不假定会进入第二轮）",
+        "planned_ids": eligible_ids,
+        "n_planned": len(eligible_ids),
+        "per_arm": {},
+    }
+    for arm in ARMS:
+        rec_ids = sorted({r["problem_id"] for r in second if r.get("arm") == arm})
+        missing = sorted(set(eligible_ids) - set(rec_ids))
+        arm_plan["per_arm"][arm] = {
+            "planned": len(eligible_ids),
+            "recorded": len(rec_ids),
+            "missing": len(missing),
+            "recorded_ids": rec_ids,
+            "missing_ids": missing,
+        }
+
+    mean = (sum(diffs) / len(diffs)) if diffs else None   # 直接均值；先导批次不做区间推断
     return {
         "n_records": len(recs),
+        "plan_denominators": plan,
+        "second_round_plan": arm_plan,
         "first_round": {"n_records": len(first), "status_counts": first_status,
                         "eligible_wrong_ids": eligible_ids, "n_eligible": len(eligible_ids)},
         "second_round": {"n_attempted_problems": len({r["problem_id"] for r in second}), "per_arm": per_arm},
@@ -217,13 +270,30 @@ INFERENCE_NOTE = (
 
 def format_summary(summary: dict) -> str:
     f, s, d = summary["first_round"], summary["second_round"], summary["determinate_pairs"]
+    plan = summary["plan_denominators"]
+    ap = summary["second_round_plan"]
     lines = [
         "== X-002 汇总 ==",
         f"记录总数: {summary['n_records']}",
+        "-- 入组分母（来自运行头）--",
+    ]
+    if plan["n_enrolled"] is None:
+        lines.append(f"  入组数: 未知（{plan['note']}）")
+    else:
+        lines.append(f"  入组数: {plan['n_enrolled']}｜首轮已记录: {plan['n_first_recorded']}"
+                     f"｜首轮缺失: {plan['n_first_missing']}")
+        if plan["n_first_missing"]:
+            lines.append(f"  首轮缺失 ID: {plan['n_first_missing']}")
+    lines += [
         f"首轮: {f['n_records']} 条 -> {f['status_counts']}",
         f"合格错题（首轮正常完成且判错）: {f['n_eligible']}",
+    ]
+    for arm, st in ap["per_arm"].items():
+        lines.append(f"  计划(计划数={st['planned']}) {arm}: 已记录={st['recorded']} 缺失={st['missing']}"
+                     + (f" 缺失 ID={st['missing_ids']}" if st["missing"] else ""))
+    lines += [
         f"第二轮已尝试题数: {s['n_attempted_problems']}",
-        "-- 第二轮各臂 --",
+        "-- 第二轮各臂（计划数=首轮已记录且判错的题数）--",
     ]
     for arm, st in s["per_arm"].items():
         rate = st["verified_success_rate_all_attempts"]

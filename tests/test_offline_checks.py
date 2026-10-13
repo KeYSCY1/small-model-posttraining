@@ -409,7 +409,10 @@ class TestEntryPointMock(unittest.TestCase):
             self.assertEqual(n_before, n_after)
 
     def test_frozen_revision_reaches_real_backend_load(self):
-        """直接替换真实 TransformersBackend.load 用到的两个加载函数（不是 fake 自己记名字）。"""
+        """真实后端加载函数的连线：**同时**替换 torch 与 transformers，并完整恢复模块。
+
+        在**没有**安装 torch/transformers 的环境里也必须能跑（不安装依赖绕过）。
+        """
         from x002 import generator as G
 
         calls = []
@@ -438,16 +441,26 @@ class TestEntryPointMock(unittest.TestCase):
                 calls.append({"kind": "model", "path_or_id": path, **kw})
                 return Model()
 
+        fake_torch = types.ModuleType("torch")
+        fake_torch.__version__ = "0.0.0-fake"
         fake_transformers = types.ModuleType("transformers")
+        fake_transformers.__version__ = "0.0.0-fake"
         fake_transformers.AutoTokenizer = FakeAutoTokenizer
         fake_transformers.AutoModelForCausalLM = FakeAutoModel
+
+        saved = {name: sys.modules.get(name) for name in ("torch", "transformers")}
+        sys.modules["torch"] = fake_torch
         sys.modules["transformers"] = fake_transformers
         try:
             backend = G.TransformersBackend(
                 {"path_or_id": "fake/model", "revision": "rev-frozen-123", "dtype": "bfloat16"}, {})
             backend.load()
         finally:
-            del sys.modules["transformers"]
+            for name, mod in saved.items():      # 完整恢复原模块（含"原本不存在"的情形）
+                if mod is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = mod
         kinds = [c["kind"] for c in calls]
         self.assertEqual(sorted(kinds), ["model", "tokenizer"])
         for call in calls:

@@ -131,6 +131,41 @@ def _dir_fingerprint(path: str) -> str:
 _VERSION_PACKAGES = ("torch", "transformers", "datasets", "sympy", "huggingface_hub")
 
 
+def capture_code_version() -> dict:
+    """记录**实际源码版本**：Git commit（若有）与工作树是否干净；无 Git 时给出文件摘要。
+
+    不伪造 commit：没有 Git 就只报文件摘要。
+    """
+    import hashlib
+    import subprocess
+
+    pkg_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    info: dict = {"git": None, "dirty": None, "files_sha16": None}
+    try:
+        commit = subprocess.run(["git", "-C", pkg_dir, "rev-parse", "HEAD"],
+                                capture_output=True, text=True, timeout=5)
+        if commit.returncode == 0:
+            info["git"] = commit.stdout.strip()
+            status = subprocess.run(["git", "-C", pkg_dir, "status", "--porcelain"],
+                                    capture_output=True, text=True, timeout=5)
+            info["dirty"] = bool(status.stdout.strip()) if status.returncode == 0 else None
+    except Exception:
+        pass
+    h = hashlib.sha256()
+    for root, dirs, files in os.walk(pkg_dir):
+        dirs[:] = [d for d in sorted(dirs) if d not in ("__pycache__", ".git", "runs")]
+        for name in sorted(files):
+            if name.endswith(".pyc") or name == ".DS_Store":
+                continue
+            fp = os.path.join(root, name)
+            rel = os.path.relpath(fp, pkg_dir)
+            h.update(rel.encode())
+            with open(fp, "rb") as fh:
+                h.update(hashlib.sha256(fh.read()).hexdigest().encode())
+    info["files_sha16"] = h.hexdigest()[:16]
+    return info
+
+
 def capture_env() -> dict:
     """只读**包元数据**记录版本，不导入 torch/transformers/datasets/sympy。
 
@@ -159,7 +194,7 @@ def _load_exposed_ids(cfg: dict) -> list[str]:
     return [str(i) for i in (ids or [])]
 
 
-def freeze_selection(reader, cfg: dict) -> tuple[list[dict], dict]:
+def freeze_selection(reader, cfg: dict, dataset_revision: str | None = None) -> tuple[list[dict], dict]:
     """确定性选题。
 
     * 配置含 ``pilot`` 段时走**先导规则**（见 :mod:`x002.pilot`）：排除已暴露题、只取
@@ -171,7 +206,9 @@ def freeze_selection(reader, cfg: dict) -> tuple[list[dict], dict]:
     """
     d = cfg["data"]
     if cfg.get("pilot"):
-        return _freeze_selection_pilot(reader, cfg, d)
+        if not dataset_revision:
+            raise RuntimeError("数据集 commit 未解析（pilot 选题需要用它排序）；拒绝继续，不用空串代替")
+        return _freeze_selection_pilot(reader, cfg, d, dataset_revision)
     n_max = int(d.get("n_problems", 12))
     pool = sorted(reader.list_ids())
     if len(pool) < 2:
@@ -192,14 +229,14 @@ def freeze_selection(reader, cfg: dict) -> tuple[list[dict], dict]:
                       "n_problems": len(problems), "pool_size": len(pool)}
 
 
-def _freeze_selection_pilot(reader, cfg: dict, d: dict) -> tuple[list[dict], dict]:
+def _freeze_selection_pilot(reader, cfg: dict, d: dict, dataset_revision: str) -> tuple[list[dict], dict]:
     pilot_cfg = dict(cfg["pilot"])
     exposed = _load_exposed_ids(cfg)
     rows = reader.list_rows()
     result = pilot_mod.select_pilot_problems(
         rows,
         exposed_ids=exposed,
-        dataset_revision=str(cfg["data"].get("revision") or ""),
+        dataset_revision=str(dataset_revision),
         seed=int(pilot_cfg.get("seed", 20261013)),
         max_problems=int(pilot_cfg.get("max_problems", 48)),
         protocol_version=str(pilot_cfg.get("protocol_version", pilot_mod.PROTOCOL_VERSION)),
@@ -221,6 +258,7 @@ def _freeze_selection_pilot(reader, cfg: dict, d: dict) -> tuple[list[dict], dic
         raise RuntimeError("按先导规则选出的题目不足 2 道，拒绝继续（不放宽筛选条件）")
     selection = {
         "rule": result["selection"]["rule"],
+        "dataset_revision_used_for_sorting": str(dataset_revision),
         "protocol_version": result["selection"]["protocol_version"],
         "n_problems": len(problems),
         "pool_size": result["layers"]["pool_total"],
@@ -251,9 +289,13 @@ def build_run_header(cfg, model_ident, dataset_ident, selection, problems, budge
         "generation": dict(cfg["generation"]),
         "judge": dict(cfg["judge"]),
         "budget_seconds": budget_seconds,
+        "run_protocol_version": (cfg.get("run_protocol_version")
+                                 or cfg.get("pilot", {}).get("protocol_version")
+                                 or pilot_mod.PROTOCOL_VERSION),
         "prompt_version": PROMPT_VERSION,
         "judge_version": JUDGE_VERSION,
         "env": (OFFLINE_FIXTURE or {}).get("env") or capture_env(),
+        "code_version": capture_code_version(),
         "note": "一次性运行：本目录开始后拒绝再次生成，只允许汇总。",
     }
 
@@ -282,7 +324,8 @@ def run_attempt(
     model_ident = resolve_model_identity(cfg["model"])
     dataset_ident = resolve_dataset_identity(cfg["data"])
     reader = reader or DatasetReader(cfg, dataset_ident)
-    problems, selection = freeze_selection(reader, cfg)
+    # 同一 commit 同时支配：读数据（DatasetReader）、选题排序、运行头
+    problems, selection = freeze_selection(reader, cfg, dataset_revision=dataset_ident.get("revision"))
     header = build_run_header(cfg, model_ident, dataset_ident, selection, problems, budget_seconds, out_dir)
     header["started_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime())
     if header_extra:

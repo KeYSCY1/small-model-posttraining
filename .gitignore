@@ -1,31 +1,17 @@
-# 本地环境与凭据
-.DS_Store
-.env
-.env.*
-!.env.example
-.venv/
-venv/
+# 只提交代码/配置/操作说明；以下一律排除
 __pycache__/
-*.py[cod]
-.ipynb_checkpoints/
-*.pem
-*.key
-
-# 模型、数据缓存与实验输出单独保留
-models/
-checkpoints/
-cache/
-.cache/
-datasets/
+*.pyc
+.DS_Store
 runs/
-outputs/
-results/
-*.safetensors
-*.pt
-*.pth
-*.ckpt
-*.bin
 *.log
-*.jsonl
-*.tar.gz
-*.zip
+offline_checks.log
+console.log
+summary_console.log
+# 模型与数据缓存、密钥、论文材料不应出现在本目录
+*.safetensors
+*.bin
+*.gguf
+.cache/
+.hf/
+*.key
+*.env
