@@ -1,47 +1,68 @@
-# 服务器同步实验代码
+# X-002已审先导运行与Git同步
 
 私有仓库：https://github.com/KeYSCY1/small-model-posttraining
 
-Git 管理代码和配置；模型与数据继续使用服务器已有缓存，虚拟环境沿用上次成功运行的环境。
-原始结果留在 `runs/`，继续按实验交接回传结果包。
+**已审版本：`r10-reviewed-20261013`。** 仓库根就是运行包，不再复制单个文件。以下步骤在Linux目标机由用户手动执行；先激活上次成功运行使用的Python环境。模型和数据继续使用原有缓存，原始结果留在runs/，不加入Git。
 
-## 首次获取
+## 1 获取固定版本
 
-在服务器选用**新的代码目录**，不覆盖此前的结果目录。服务器需要能访问 GitHub，并完成私有仓库的
-Git 身份认证（浏览器登录状态不会自动传到服务器）。
+首次使用新的代码目录，保留原目录与结果：
 
 ```bash
 cd ~/autodl-tmp
 git clone https://github.com/KeYSCY1/small-model-posttraining.git
 cd small-model-posttraining
-git status --short      # 应无输出
-git rev-parse HEAD
 ```
 
-代码已经在仓库根目录，不必再进入 `run_package` 子目录。
-
-**当前只可同步，不启动模型。** `r07-submitted-20261013` 是待修快照；R08 修补尚待 PI 验收，
-可运行 commit 或标签由 PI 在验收后给出。
-
-## 后续更新
-
-先结束当前作业，再进入服务器这份代码目录。执行 `git status --short`，应没有输出；
-有本地修改时先停止更新并保留差异，不强制覆盖。
+已有克隆时直接进入该目录。先执行 `git status --short`，有本地改动就停止并保留差异；作业运行时不切版本。
 
 ```bash
 git fetch origin --tags
+git switch --detach r10-reviewed-20261013
+git describe --tags --exact-match
+git rev-parse HEAD
+git status --short
 ```
 
-随后按 PI 交接给出的**具体 commit 或标签**执行 `git switch --detach <commit 或 tag>`。
-此处不提供可直接运行的占位命令，避免把未审版本当成可运行版本。切换后：
+标签应为 `r10-reviewed-20261013`，工作树应无输出。私有仓库需要服务器自身的GitHub认证；浏览器登录不会自动传到服务器。认证失败只处理认证，不回到逐文件覆盖。
+
+## 2 核对现有环境并检查
 
 ```bash
-git rev-parse HEAD         # 必须与交接版本一致
-git status --short         # 必须无输出（运行头会记录 dirty 状态）
+python3 -c "import torch,transformers,datasets,huggingface_hub as h;print(torch.__version__,transformers.__version__,datasets.__version__,h.__version__)"
 ```
 
-然后在**原有环境**中运行该版本要求的离线检查（`bash run_offline_checks.sh offline_checks.log`，
-期望结尾 `Ran 50 tests … OK`）。检查通过并且运行准入明确后，才执行实验命令。
+应为上一轮已测组合：`2.5.1+cu121 4.57.6 3.6.0 0.36.2`。不一致或导入失败就停止并回传输出，不就地安装或升级。
 
-后续无需逐个上传修改文件或混用压缩包。`runs/` 及日志被 `.gitignore` 排除，
-切换代码版本不会把它们纳入版本历史；实验结果仍需单独保存和回传。
+```bash
+bash run_offline_checks.sh offline_checks.log
+git status --short
+```
+
+应为58项、结尾OK、退出0；工作树仍干净。失败就停止并回传日志与源码commit。
+
+## 3 只运行一次
+
+确认缓存已就绪后，以下使用Bash。先导最多48题，外层44分钟含加载和生成，用户总窗口不超过45分钟；不自动重跑、增时或扩题。
+
+```bash
+set -o pipefail
+python3 -m x002.cli run --config config.json 2>&1 | tee console.log
+x002_run_rc=${PIPESTATUS[0]}
+echo "run_exit=${x002_run_rc}"
+python3 -m x002.cli summarize --out-dir runs/x002_pilot_r08 2>&1 | tee summary_console.log
+```
+
+`runs/x002_pilot_r08` 是沿用的配置目录名，不代表运行了旧源码；身份以运行头commit/tag为准。目录已启动会拒绝再次生成，不删除标记或换目录绕过；若已存在该目录，停止并回传已有记录。
+
+非零退出时只做上面的只读汇总和日志回收，不再次生成。真实题单在首次运行中按预先规则冻结，排除R06十二题、只取金标准受支持子集；实际入组数/组成、缺失分母、两臂成本均落盘。样本不足或没有合格错题如实报告，不以旧n=1或此次先导作机制/总体效果结论。
+
+## 4 回传原始结果
+
+```bash
+git rev-parse HEAD > code_version.txt
+git status --short >> code_version.txt
+tar czf x002_pilot_r10_results.tar.gz code_version.txt offline_checks.log console.log summary_console.log runs/x002_pilot_r08
+```
+
+带回 `x002_pilot_r10_results.tar.gz` 即可，不需人工整理研究报告。包应包含原始records.jsonl、运行头、started/status、summary与日志；失败时能保存多少就回传多少，不为补齐文件重跑。模型、缓存与虚拟环境不回传。

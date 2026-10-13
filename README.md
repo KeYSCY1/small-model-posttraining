@@ -1,7 +1,7 @@
 # X-002 运行包（一次性工程试运行）
 
-**状态：R09 收口版，未运行。** 本轮只做本地编写与无模型离线检查；未安装、未下载、未运行模型、未操作目标机。
-**本版本尚未获得目标机运行准入**（可由 PI 验收后的 commit/tag 取代）。
+**状态：R10已通过PI离线工程审阅，58项检查通过。** 已审标签 `r10-reviewed-20261013`；允许按既定最多48题、外层44分钟/用户45分钟窗口，由用户手动进行一次先导试运行。本次审阅未运行真实模型或目标机。
+**部署、环境核对、离线检查、运行与回传的唯一操作入口：[SERVER_SYNC.md](SERVER_SYNC.md)。**
 
 **仓库根目录就是这个运行包**：`git clone` 后的仓库根即包根，命令直接在这里执行，**不要再 `cd run_package`**。
 
@@ -14,8 +14,8 @@
   README.md                    本文件
   VERSION_CONTROL.md           Git 版本管理约定（唯一活动源码 + 私有仓库）
   REVIEW_STATUS.md             当前审阅/运行准入状态
-  SERVER_SYNC.md               服务器取代码流程（含"当前只可同步、不启动模型"）
-  run_offline_checks.sh        离线检查包装脚本（失败即非零退出，留 .raw 原始输出）
+  SERVER_SYNC.md               已审版本的服务器部署、检查、运行与回传步骤
+  run_offline_checks.sh        离线检查包装脚本（包外临时日志，结束后保存指定日志）
   run_worker.py                工作进程入口脚本（正式路径与离线检查共用）
   exposed_problems_r06.json    R06 已暴露的 12 个题号（选题排除用）
   x002/
@@ -38,7 +38,7 @@
 cd ~/autodl-tmp
 git clone https://github.com/KeYSCY1/small-model-posttraining.git   # 首次
 cd small-model-posttraining && git status --short && git rev-parse HEAD
-git fetch origin --tags && git switch --detach <PI 指定的 commit 或 tag>   # 后续更新
+git fetch origin --tags && git switch --detach r10-reviewed-20261013   # 获取本次已审版本
 ```
 
 * 目标机既有成功环境**优先保留**；**不自动安装/升级**。
@@ -59,8 +59,8 @@ bash run_offline_checks.sh offline_checks.log    # 期望：Ran 58 tests … OK
 
 （离线通过 **不代表** GPU 路径可用。）
 
-**当前状态（R09）**：R08 的 50 项已由 PI 复跑通过；R08 遗留的两组定点缺口（判分答案区域、Git 产物与源码身份）
-已在本批收口。历史事实：本包已于 2026-10-13 在单张 RTX 4090 上完成一次真实工程试运行（12 题、322.16 秒、
+**当前收口（R10）**：PI独立复跑58项通过，前轮判分、Git产物与测试隔离缺口均已按本次范围收口。
+历史事实：本包已于 2026-10-13 在单张 RTX 4090 上完成一次真实工程试运行（12 题、322.16 秒、
 14 条生成记录、无错误；仅 1 对可判定 A/B），判读见 `20261013/research_R06/R06_首次试运行结果判读.md`，
 **不构成研究结论**。
 
