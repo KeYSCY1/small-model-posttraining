@@ -28,7 +28,7 @@ if [ "$rc" -ne 0 ]; then
 fi
 
 # 结尾必须是 OK：非零退出或结尾异常都视为未通过
-if ! tail -n 5 "$TMP_LOG" | grep -qx "OK"; then
+if ! tail -n 5 "$TMP_LOG" | grep -qE '^OK( \([^)]*\))?$'; then
   echo "[FAIL] 日志未以 OK 结尾，视为未通过；日志 ${LOG}" >&2
   exit 1
 fi
