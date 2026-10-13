@@ -63,7 +63,7 @@
     "seed": 20261013,
     "exposed_ids_path": "exposed_problems_aime24.json",
     "rule": "sha256(protocol|dataset_revision|seed|unique_id|normalized_gold) ascending, take first N",
-    "note": "与模型输出无关的预先确定规则：先排除本项目已暴露的 AIME 题（当前为空），再只取现行判分支持的标量金标准，再按稳定哈希排序取前 12；本轮无结构性剔除（71/81/88 经完整题面核对后保留）。",
+    "note": "与模型输出无关的预先确定规则：先因源题误写做数据质量排除 aime24:88，再排除本项目已暴露的 AIME 题（当前为空）和非标量金标准，按稳定哈希排序取前 11；保留原题单其余11题，不补新题。",
     "dataset_revision_source": "运行头记录的**解析后** commit；同一 commit 同时支配读数据、选题排序、题单摘要与运行头；缺失则拒绝继续（不使用空串）",
     "frozen_list_path": "frozen_problems_aime24.json",
     "frozen_list_note": "生成前核对：冻结清单与生产读题路径算出的题单/摘要必须一致，不一致在**加载模型之前**停止（verify_frozen）。",

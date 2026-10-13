@@ -1,7 +1,7 @@
 # X-002 运行包（AIME 2024 一次性先导；仓库根即运行包）
 
-**当前动作：R12工程审阅已通过；AIME先导待剔除一处源题误写后发布，暂不执行生成。** PI独立68项全部通过、无跳过；当前配置仍含已确认转录错误的aime24:88，R13仅排除该题并保留其余11题，未推送/未打标签。
-本轮只做本地编写与无模型离线检查；未安装、未下载模型、未运行 tokenizer/模型、未操作目标机。
+**当前动作：R13验收通过；已审标签`r13-reviewed-20261013`，由用户在目标机手动运行一次AIME先导。** PI独立68项全部执行并通过、无跳过；正式路径已排除源题误写的aime24:88，保留其余11题、不补新题。模型与目标机运行尚未启动。
+**部署、环境与真实数据核对、一次运行及回传的唯一操作正文：[SERVER_SYNC.md](SERVER_SYNC.md)。**
 **仓库根目录就是这个运行包**：`git clone` 后直接在仓库根执行命令，**不要再 `cd run_package`**。
 
 ## 1. 当前入口（AIME 2024）
@@ -32,7 +32,7 @@ python3 -m x002.cli summarize --out-dir runs/x002_aime24_pilot_r11   # 只读汇
 （torch 2.5.1+cu121 / transformers 4.57.6 / datasets 3.6.0 / huggingface_hub 0.36.2）。
 版本或导入不符 → 停止并回传，不自动安装。
 
-**先跑离线检查**（退出码非零或结尾不是 `OK` 就停止）：
+**先跑离线检查**（退出码非零就停止）：
 
 ```bash
 bash run_offline_checks.sh offline_checks.log    # 期望：Ran 68 tests … OK
@@ -40,13 +40,14 @@ bash run_offline_checks.sh offline_checks.log    # 期望：Ran 68 tests … OK
 
 （离线通过 **不代表** GPU 路径可用。）
 
+服务器无工作区R11源缓存时，2项缓存用例会跳过，可显示`OK (skipped=2)`；PI审阅时提供原始缓存，68项均执行。服务器必须按SERVER_SYNC再用真实数据做生成前题单核对。
+
 **历史索引（不作为当前步骤）**：MATH-500 的 `config.json`、48 题先导与
 `r10-reviewed-20261013` 标签属于已审历史设置，结果只读；AIME 适配不改变它们的含义。
 
 ## 2. 数据版本与题单（事前冻结）
 
-* 固定 commit 的原始文件摘要已核对（SHA-256 `2602156e…94a38`，= 仓库记录）；逐题核查见
-  `20261013/research_R12/AIME2024_数据核验与题单.json` 与 `AIME2024_三题题面核查.md`。
+* 固定 commit 的原始文件摘要为`2602156eb2a0ab64393dc46617a3bfee3451ae3c985a7ea6ac2b55436e094a38`。工作区的R12题面核查是历史来源；当前质量排除与11题以R13 PI审阅、配置和冻结清单为准。
 * 图依赖判定：只出现 `[asy]`/示例图引用**不构成**排除理由；71/81 保留；88 因**源数据题面误写**排除（与图示无关）。
 * 选题规则与生产读题路径**同一函数**；运行头记录逐层分母、题单摘要与冻结核对结果。
 
@@ -54,13 +55,14 @@ bash run_offline_checks.sh offline_checks.log    # 期望：Ran 68 tests … OK
 
 ```bash
 # 在仓库根目录执行
-python3 -m x002.cli run --config config_aime24.json 2>&1 | tee console.log; echo "exit=${PIPESTATUS[0]}"
+set -o pipefail
+python3 -m x002.cli run --config config_aime24.json 2>&1 | tee console.log
+x002_run_rc=${PIPESTATUS[0]}
+echo "run_exit=${x002_run_rc}"
 python3 -m x002.cli summarize --out-dir runs/x002_aime24_pilot_r11 | tee summary_console.log
-git rev-parse HEAD > code_version.txt && git status --short >> code_version.txt
-tar czf x002_aime24_pilot_r11_results.tar.gz code_version.txt offline_checks.log console.log summary_console.log runs/x002_aime24_pilot_r11
 ```
 
-非零退出也**只做只读汇总与回收**，不重跑、不放宽选题、不换模型。
+以上只是入口索引；请按SERVER_SYNC完成固定版本与数据核对、避免覆盖已有日志，再生成一次和打包。回传文件为`x002_aime24_pilot_r13_results.tar.gz`。非零退出也只做只读汇总与回收。
 
 ## 4. 一次性语义（没有恢复、没有覆盖）
 
@@ -84,10 +86,9 @@ tar czf x002_aime24_pilot_r11_results.tar.gz code_version.txt offline_checks.log
 
 ## 6. 日志与回收
 
-输出目录整体打包即可（当前配置为 `runs/x002_pilot_r08/`）：
+当前输出目录为`runs/x002_aime24_pilot_r11/`，目录名沿用首版，实际代码身份以发布标签和运行头为准：
 
-* `runs/x002_pilot_r08/` —— 本批（R08）先导批次输出目录；R06 的 `runs/x002_smoke/` 与
-  R07 的 `runs/x002_pilot_r07/` 保留只读，一次性语义会拒绝覆盖
+* `runs/x002_aime24_pilot_r11/` —— 当前AIME先导输出；既有MATH结果只读保留，一次性语义拒绝覆盖
 * `started.json` —— 启动标记（时间、配置路径、预算、父进程 pid）
 * `status.json` —— 退出原因（`worker_exited` / `worker_failed` / `total_deadline_exceeded`）、是否超时、用时、
   `SIGTERM`/`SIGKILL` 发出时刻、`worker_pid` 与原始 `worker_pgid`、清理后是否仍有存活成员
