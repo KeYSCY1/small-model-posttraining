@@ -1189,6 +1189,16 @@ class TestJudgeNewCounterexamples(unittest.TestCase):
         ("The answer is 2.\nor 3", "2"),
         ("The answer is $2$.\nOr 3.", "2"),
         ("The answer is #### 2\nOr 3.", "2"),
+        # 带正负号的备选值（R10 PI 反例）：复用受支持的数值 token 语法，含跨行与句末换行
+        ("The answer is 2,\nor -123.", "2"),
+        ("The answer is 2,\n-123.", "2"),
+        ("The answer is 2,\n+123.", "2"),
+        ("The answer is 2,\nor +123.", "2"),
+        ("The answer is 2.\nOr -3.", "2"),
+        ("The answer is 2.\nAnd +3.", "2"),
+        ("The answer is \\boxed{2},\nor -123.", "2"),
+        ("The answer is $2$, or $-3$.", "2"),
+        ("The answer is 2, or -3.", "2"),
     ]
 
     # ---- 必须保持 correct：合法标量与"后续普通解释里的数字"
@@ -1213,6 +1223,14 @@ class TestJudgeNewCounterexamples(unittest.TestCase):
         ("\\boxed{2}\n\nWe used 3 steps.", "2"),
         ("\\boxed{2}\nWe checked 3 alternatives.", "2"),
         ("#### 2\n3 steps were needed.", "2"),
+        # 合法单个带符号标量（不得因为新增多答案判定而失去判分能力）
+        ("The answer is -3.", "-3"),
+        ("The answer is +3.", "+3"),
+        ("The answer is -1,000.", "-1000"),
+        ("The answer is -0.5.", "-0.5"),
+        ("\\boxed{-3}", "-3"),
+        ("\\boxed{-1,000}", "-1000"),
+        ("The answer is -3.\n\nWe used 2 steps.", "-3"),
     ]
 
     def test_multi_answer_forms_are_unknown(self):
@@ -1241,6 +1259,23 @@ class TestJudgeNewCounterexamples(unittest.TestCase):
             with self.subTest(resp=resp):
                 out = J.judge(resp, gold)
                 self.assertEqual(out["status"], "undetermined", out)
+
+    def test_signed_alternative_values_are_unknown(self):
+        """带正负号的跨行/句末换行备选值必须 UNKNOWN（复用数值 token 语法，不靠字符串名单）。"""
+        for resp, gold in (("The answer is 2,\nor -123.", "2"),
+                           ("The answer is 2,\n-123.", "2"),
+                           ("The answer is 2,\nor +123.", "2"),
+                           ("The answer is 2.\nOr -3.", "2"),
+                           ("The answer is \\boxed{2},\nor -123.", "2"),
+                           ("The answer is -3, or -4.", "-3")):
+            with self.subTest(resp=resp):
+                out = J.judge(resp, gold)
+                self.assertEqual(out["status"], "undetermined", out)
+        # 对照：单个带符号标量仍应正常判分
+        for resp, gold in (("The answer is -3.", "-3"), ("The answer is +3.", "+3"),
+                           ("The answer is -1,000.", "-1000"), ("\\boxed{-3}", "-3")):
+            with self.subTest(resp=resp):
+                self.assertEqual(J.judge(resp, gold)["status"], "correct", resp)
 
     def test_three_digit_value_is_not_treated_as_thousands_fragment(self):
         """三位数备选值必须按多答案处理；只有**完整合法千分位**才受支持。"""
@@ -1281,88 +1316,128 @@ class TestJudgeNewCounterexamples(unittest.TestCase):
 
 
 class TestCodeVersionSourceIdentity(unittest.TestCase):
-    """源码身份只按受控清单计算：合成日志/环境/缓存不参与，受控源码改动必须被发现。"""
+    """源码身份：只按受控清单计算摘要，且**绝不在活动包目录里造文件或改源码**。
 
-    def _cleanup(self, *paths):
-        for p in paths:
-            if os.path.isdir(p):
-                import shutil
-                shutil.rmtree(p, ignore_errors=True)
-            elif os.path.exists(p):
-                os.remove(p)
+    所有造日志/环境/缓存、修改受控源码、清理动作都发生在 ``TemporaryDirectory`` 下的独立 fixture
+    或本地临时 Git 克隆里；fixture 只复制受控清单，不复制用户的 .venv/缓存/权重/日志。
+    """
+
+    def _stage(self, tmp: str, *, git: bool) -> str:
+        """把受控清单（可选加一个 .gitignore）复制到临时 fixture，返回其路径。
+
+        fixture 里用本地 ``git init`` + commit 造出干净的 Git 模式；``git=False`` 时不建仓库，
+        用于无 Git 归档模式。**只复制清单内的文件**，不触碰用户环境、缓存或权重。
+        """
+        import shutil
+        dest = os.path.join(tmp, "fixture_pkg")
+        for rel in W.MANIFEST_PATHS:
+            src = os.path.join(ROOT, rel)
+            dst = os.path.join(dest, rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copyfile(src, dst)
+        if git:
+            env = {**os.environ, "GIT_AUTHOR_NAME": "fixture", "GIT_AUTHOR_EMAIL": "fixture@local",
+                   "GIT_COMMITTER_NAME": "fixture", "GIT_COMMITTER_EMAIL": "fixture@local"}
+            for cmd in (["git", "init", "-q"], ["git", "add", "-A"],
+                        ["git", "commit", "-q", "-m", "fixture"]):
+                proc = subprocess.run(cmd, cwd=dest, capture_output=True, text=True, env=env)
+                if proc.returncode != 0 and cmd[1] != "commit":
+                    self.fail(f"fixture git 步骤失败：{cmd} {proc.stderr}")
+        return dest
+
+    def _junk(self, root: str) -> None:
+        """在 fixture 里造"应被忽略"的产物（日志/环境/缓存/压缩件）。"""
+        for rel in ("offline_checks.log", "offline_checks.log.raw", "code_version.txt",
+                    "console.log", ".env.production", "model.pt", "model.gguf", "cert.pem"):
+            with open(os.path.join(root, rel), "w", encoding="utf-8") as fh:
+                fh.write("synthetic ignored artifact\n")
+        for d in (".venv/bin", "cache", "logs_demo", "checkpoints", "datasets", "results"):
+            os.makedirs(os.path.join(root, d), exist_ok=True)
+            with open(os.path.join(root, d, "artifact.bin"), "wb") as fh:
+                fh.write(b"\x00synthetic cache\x00")
 
     def test_manifest_excludes_logs_env_and_cache(self):
-        """在本包内新增被忽略的日志、.venv、模型文件后，源码摘要必须不变。"""
-        before = W.capture_code_version()
-        junk = [os.path.join(ROOT, n) for n in
-                ("offline_checks.log", "offline_checks.log.raw", "code_version.txt",
-                 "console.log", "runs_should_not_matter.tmp")]
-        made_dirs = [os.path.join(ROOT, d) for d in (".venv/bin", "cache", "logs_demo")]
-        try:
-            for p in junk:
-                with open(p, "w", encoding="utf-8") as fh:
-                    fh.write("synthetic ignored artifact\n")
-            for d in made_dirs:
-                os.makedirs(d, exist_ok=True)
-                with open(os.path.join(d, "artifact.bin"), "wb") as fh:
-                    fh.write(b"\x00synthetic cache\x00")
-            after = W.capture_code_version()
-        finally:
-            self._cleanup(*junk, *[os.path.join(ROOT, d) for d in (".venv", "cache", "logs_demo")])
+        """fixture 内新增被忽略的日志/环境/缓存后，源码摘要必须不变（不碰用户目录）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = self._stage(tmp, git=True)
+            before = W.capture_code_version(fixture)
+            self._junk(fixture)
+            after = W.capture_code_version(fixture)
+            for rel in (".venv/bin/artifact.bin", "cache/artifact.bin", "console.log",
+                        "offline_checks.log", "model.pt", ".env.production"):
+                self.assertTrue(os.path.exists(os.path.join(fixture, rel)),
+                                f"fixture 里应存在 {rel}（说明造文件成功）")
         self.assertEqual(before["files_sha16"], after["files_sha16"],
                          "被忽略的日志/环境/缓存不得改变源码摘要")
         self.assertEqual(before["manifest"], after["manifest"])
+        self.assertEqual(before["source_mode"], "git")
+        self.assertFalse(before["dirty"], "干净 fixture 的 dirty 应为 False")
         self.assertTrue(before["coverage"]["manifest_only"])
         self.assertNotIn("runs", before["manifest"])
 
     def test_editing_controlled_source_changes_summary(self):
-        """改动受控清单里的源码必须改变摘要（且 dirty 如实反映）。"""
-        target = os.path.join(ROOT, "x002", "prompts.py")
-        with open(target, encoding="utf-8") as fh:
-            original = fh.read()
-        before = W.capture_code_version()
-        try:
+        """fixture 内改动受控源码必须改变摘要，恢复后复原（不碰用户源码）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = self._stage(tmp, git=True)
+            target = os.path.join(fixture, "x002", "prompts.py")
+            with open(target, encoding="utf-8") as fh:
+                original = fh.read()
+            before = W.capture_code_version(fixture)
             with open(target, "a", encoding="utf-8") as fh:
-                fh.write("\n# R09 合成改动：仅用于验证受控源码改动会改变摘要\n")
-            after = W.capture_code_version()
-        finally:
+                fh.write("\n# R10 fixture 合成改动：仅验证受控源码改动会改变摘要\n")
+            after = W.capture_code_version(fixture)
+            self.assertTrue(after["dirty"], "改了已跟踪源码后 dirty 必须如实为 True")
             with open(target, "w", encoding="utf-8") as fh:
                 fh.write(original)
+            restored = W.capture_code_version(fixture)
         self.assertNotEqual(before["files_sha16"], after["files_sha16"])
         self.assertIn("x002/prompts.py", after["manifest"])
-        self.assertEqual(before["files_sha16"], W.capture_code_version()["files_sha16"],
-                         "恢复原文件后摘要必须复原")
+        self.assertEqual(before["files_sha16"], restored["files_sha16"], "恢复原文件后摘要必须复原")
 
-    def test_archive_mode_uses_same_manifest(self):
-        """无 Git 的归档包：同一份清单、来源标 archive、不伪造 commit。"""
-        import shutil
+    def test_archive_and_git_agree_on_same_source(self):
+        """同一份完整受控源码：Git 模式与无 Git 归档模式必须得到相同 files_sha16。"""
         with tempfile.TemporaryDirectory() as tmp:
-            dest = os.path.join(tmp, "run_package")
-            shutil.copytree(ROOT, dest, ignore=shutil.ignore_patterns(
-                ".git", "__pycache__", "*.pyc", "runs", "*.log", "*.log.raw"))
-            code = (
-                "import json,sys;sys.path.insert(0, %r);"
-                "from x002 import worker as W;"
-                "print(json.dumps(W.capture_code_version()))" % dest
-            )
-            proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
-                                  cwd=tmp, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            info = json.loads(proc.stdout.strip().splitlines()[-1])
-        self.assertEqual(info["source_mode"], "archive")
-        self.assertIsNone(info["git"], "无 Git 时不得伪造 commit")
-        self.assertEqual(info["manifest"], list(W.MANIFEST_PATHS), "两种模式使用同一份清单")
-        self.assertEqual(info["manifest_missing"], [])
-        self.assertEqual(info["manifest_files"], len(W.MANIFEST_PATHS))
-        self.assertTrue(info["files_sha16"])
+            git_fixture = self._stage(os.path.join(tmp, "g"), git=True)
+            os.makedirs(os.path.join(tmp, "a"), exist_ok=True)
+            archive_fixture = self._stage(os.path.join(tmp, "a"), git=False)
+            git_info = W.capture_code_version(git_fixture)
+            arc_info = W.capture_code_version(archive_fixture)
+            # 归档模式下新增被忽略产物同样不改变摘要
+            self._junk(archive_fixture)
+            arc_junk = W.capture_code_version(archive_fixture)
+        self.assertEqual(git_info["source_mode"], "git")
+        self.assertEqual(arc_info["source_mode"], "archive")
+        self.assertIsNone(arc_info["git"], "无 Git 时不得伪造 commit")
+        self.assertEqual(git_info["manifest"], arc_info["manifest"], "两种模式使用同一份规范顺序清单")
+        self.assertEqual(git_info["manifest"], W.canonical_manifest_paths())
+        self.assertEqual(git_info["manifest_missing"], [])
+        self.assertEqual(arc_info["manifest_missing"], [])
+        self.assertEqual(git_info["manifest_files"], len(W.MANIFEST_PATHS))
+        self.assertEqual(arc_info["manifest_files"], len(W.MANIFEST_PATHS))
+        self.assertEqual(git_info["files_sha16"], arc_info["files_sha16"],
+                         "同一源码在两种来源模式下必须得到相同摘要")
+        self.assertEqual(arc_info["files_sha16"], arc_junk["files_sha16"],
+                         "归档模式下新增被忽略产物也不得改变摘要")
 
-    def test_git_mode_reports_commit_and_dirty(self):
+    def test_archive_fixture_only_contains_manifest(self):
+        """归档 fixture 只应含受控清单，不得把用户的 .venv/缓存/权重/日志复制进来。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = self._stage(tmp, git=False)
+            present = []
+            for root, dirs, files in os.walk(fixture):
+                for name in files:
+                    present.append(os.path.relpath(os.path.join(root, name), fixture))
+        self.assertEqual(sorted(present), sorted(W.MANIFEST_PATHS))
+
+    def test_active_package_reports_commit_and_missing(self):
+        """活动包自身（只读）：Git commit/dirty 如实记录，且清单无缺文件。"""
         info = W.capture_code_version()
         if info["source_mode"] != "git":
             self.skipTest("当前活动包不在 Git 仓库中")
         self.assertEqual(len(info["git"]), 40, info["git"])
         self.assertIsInstance(info["dirty"], bool)
         self.assertEqual(info["manifest_missing"], [])
+        self.assertEqual(info["manifest"], W.canonical_manifest_paths())
 
 
 if __name__ == "__main__":

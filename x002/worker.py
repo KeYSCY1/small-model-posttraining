@@ -174,29 +174,60 @@ def _git_lines(pkg_dir: str, *args: str) -> list[str] | None:
     return [ln.strip() for ln in out.stdout.split("\n") if ln.strip()]
 
 
-def capture_code_version() -> dict:
+def canonical_manifest_paths() -> list[str]:
+    """受控清单的**规范顺序**：按路径字节（UTF-8）升序。
+
+    Git 模式与无 Git 归档模式都必须用这一个顺序计算摘要，否则同一份源码会因来源模式不同而得到不同
+    ``files_sha16``。清单本身在模块里按可读性排列，这里统一规范化，不依赖书写顺序。
+    """
+    return sorted(MANIFEST_PATHS, key=lambda p: p.encode("utf-8"))
+
+
+def _manifest_digest(pkg_dir: str, paths: list[str]) -> str:
+    """按给定路径顺序计算源码摘要：路径字节 + NUL + 文件内容 SHA-256 十六进制。"""
+    import hashlib
+
+    digest = hashlib.sha256()
+    for rel in paths:
+        fp = os.path.join(pkg_dir, rel)
+        if not os.path.isfile(fp):
+            continue
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\0")
+        with open(fp, "rb") as fh:
+            digest.update(hashlib.sha256(fh.read()).hexdigest().encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()[:16]
+
+
+def capture_code_version(pkg_dir: str | None = None) -> dict:
     """记录**实际源码版本**：Git commit/工作树状态，以及**只按受控清单**计算的源码摘要。
 
-    * 摘要只读受控源码与配置（``MANIFEST_PATHS``）：不递归扫描日志、``.venv``、模型或数据缓存，
-      也不读 ``runs/``；新增运行日志或被忽略的环境文件**不会**改变源码摘要。
+    * 摘要只读受控源码与配置（``MANIFEST_PATHS`` 的规范顺序）：不递归扫描日志、``.venv``、
+      模型或数据缓存，也不读 ``runs/``；新增运行日志或被忽略的环境文件**不会**改变源码摘要。
     * 已跟踪代码的改动必须能被发现：Git 模式下摘要覆盖 ``git ls-files``（含被改动的已跟踪文件），
       并且 ``dirty`` 如实记录 ``git status --porcelain``（含未跟踪的非忽略文件）。
-    * 无 Git 的归档包：读清单里实际存在的文件；此时摘要会包含已修改但未提交的内容，
-      因此报告里同时给出 ``source_mode`` 与 ``manifest_missing``，不把两种模式说成同一件事。
+    * 无 Git 的归档包：读清单里实际存在的文件，用**同一规范顺序**计算摘要，因此同一份完整源码在
+      两种模式下得到**相同** ``files_sha16``；此时摘要包含已修改但未提交的内容，故同时给出
+      ``source_mode`` 与 ``manifest_missing``，不把两种模式的差异掩盖掉。
+    * ``pkg_dir`` 仅供离线检查在**临时 fixture** 上取证使用（默认取本包目录）；
+      正常运行时不要传参，运行头记录的就是实际部署的代码目录。
     """
     import hashlib
 
-    pkg_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    pkg_dir = os.path.abspath(pkg_dir) if pkg_dir else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    order = canonical_manifest_paths()
     info: dict = {
         "source_mode": None,        # "git" | "archive"
         "git": None,
         "dirty": None,
         "files_sha16": None,
-        "manifest": list(MANIFEST_PATHS),
+        "manifest": order,
+        "manifest_order": "sorted-by-path-bytes",
         "manifest_files": 0,
         "manifest_missing": [],
         "manifest_sha16": hashlib.sha256(
-            "\n".join(MANIFEST_PATHS).encode("utf-8")).hexdigest()[:16],
+            "\n".join(order).encode("utf-8")).hexdigest()[:16],
         "coverage": {
             "manifest_only": True,
             "excludes": ["日志", "runs/ 运行输出", "虚拟环境", "模型与数据缓存", "压缩件"],
@@ -215,7 +246,7 @@ def capture_code_version() -> dict:
     manifest = set(MANIFEST_PATHS)
     if tracked is not None:
         info["source_mode"] = "git"
-        paths = sorted(p for p in tracked if p in manifest)
+        paths = [p for p in order if p in set(tracked)]        # 规范顺序 ∩ 已跟踪
         tracked_outside = sorted(p for p in tracked if p not in manifest)
         if tracked_outside:
             info["tracked_outside_manifest"] = tracked_outside
@@ -223,21 +254,11 @@ def capture_code_version() -> dict:
         info["manifest_missing"] = sorted(manifest - set(tracked))
     else:
         info["source_mode"] = "archive"
-        paths = [p for p in MANIFEST_PATHS if os.path.isfile(os.path.join(pkg_dir, p))]
+        paths = [p for p in order if os.path.isfile(os.path.join(pkg_dir, p))]
         info["manifest_files"] = len(paths)
         info["manifest_missing"] = sorted(manifest - set(paths))
 
-    digest = hashlib.sha256()
-    for rel in paths:
-        fp = os.path.join(pkg_dir, rel)
-        if not os.path.isfile(fp):
-            continue
-        digest.update(rel.encode("utf-8"))
-        digest.update(b"\0")
-        with open(fp, "rb") as fh:
-            digest.update(hashlib.sha256(fh.read()).hexdigest().encode("utf-8"))
-        digest.update(b"\n")
-    info["files_sha16"] = digest.hexdigest()[:16]
+    info["files_sha16"] = _manifest_digest(pkg_dir, paths)
     return info
 
 

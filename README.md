@@ -26,7 +26,7 @@
     pilot.py                   先导选题（排除已暴露 + 标量金标准 + 稳定哈希排序）
     cli.py                     父进程监督者：运行 / 只读汇总
     run.py                     记录、汇总分母与描述统计
-  tests/test_offline_checks.py 56 项离线回归检查（无模型、无网络）
+  tests/test_offline_checks.py 58 项离线回归检查（无模型、无网络）
   tests/fake_backend.py        测试替身后端（只替换外部模型，不复制业务循环）
 ```
 
@@ -54,7 +54,7 @@ git fetch origin --tags && git switch --detach <PI 指定的 commit 或 tag>   #
 **所有命令都在仓库根目录执行**。先跑离线检查（退出码非零或结尾不是 `OK` 就停止）：
 
 ```bash
-bash run_offline_checks.sh offline_checks.log    # 期望：Ran 56 tests … OK
+bash run_offline_checks.sh offline_checks.log    # 期望：Ran 58 tests … OK
 ```
 
 （离线通过 **不代表** GPU 路径可用。）
@@ -210,11 +210,17 @@ python3 -m x002.cli summarize --out-dir runs/x002_pilot_r08   # 只读汇总（�
   选题规则所用实际 commit、逐层分母与 subject/level 组成、`selected_ids_sha16`、`code_version`。
 * **完整分母**：摘要从运行头导出入组/首轮/各臂分母，覆盖“首轮中断”“两臂之一缺失”“两臂都有但不可判定”
   “无运行头历史日志”四类；JSON 与文本一致。
-* **Git 产物与源码身份（R09）**：`.gitignore` 恢复 R07 原始排除集并补齐实际产物
+* **Git 产物与源码身份（R09/R10）**：`.gitignore` 恢复 R07 原始排除集并补齐实际产物
   （`.venv/`、`.env.*`、`*.pt`/`*.pem`、`cache/`、`datasets/`、`outputs/`、`results/`、`*.tar.gz`、`*.zip`、
-  `*.log.raw`、`code_version.txt` 等）；`capture_code_version()` 只按受控清单计算源码摘要，
-  记录 `source_mode`(git/archive)、`dirty`、`manifest_files/missing`、`manifest_sha16`，
-  不扫描日志、环境、缓存与权重；已验证“干净克隆 → 运行离线包装 → `git status` 仍干净”。
+  `*.log.raw`、`code_version.txt` 等）；`capture_code_version()` 只按受控清单 `MANIFEST_PATHS`
+  的**规范顺序**（按路径字节升序）计算源码摘要，记录 `source_mode`(git/archive)、`dirty`、
+  `manifest_files/missing`、`manifest_sha16`，不扫描日志、环境、缓存与权重；
+  同一份完整源码在 **Git 与无 Git 归档两种模式下得到相同 `files_sha16`**（R10 收口），
+  新增日志/环境/缓存不改变摘要，受控源码改动必然改变摘要并如实反映 `dirty`。
+* **测试只碰临时 fixture（R10）**：源码身份用例在 `TemporaryDirectory` 下自建 fixture 或本地临时 Git
+  克隆（只复制受控清单），**不在活动包目录里造日志/环境/缓存、也不改用户源码**；活动包只读。
+  已用“预置 `.env`/缓存/日志与源码哨兵的一次性克隆”核验：运行实际离线包装后预置文件与受控源码字节均未变、
+  工作树干净、只更新约定的检查日志。
 * **交接顺序**：**先部署指定版本，再核对环境与离线检查**；版本不符或导入失败停止回传，不自动安装/升级。
 
 ## 10. 预算与未验证路径

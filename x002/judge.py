@@ -141,22 +141,23 @@ def _answer_region(body: str, start: int) -> str:
 
 
 def _starts_new_number(text: str) -> bool:
-    """``text`` 是否以**新数值**开头（区分 ``,123`` 与合法千分位分组 ``,000``）。
+    """``text`` 是否以**新数值**开头（复用受支持的数值 token 语法，含正负号）。
 
-    * ``1,000``：逗号前是数字、后面正好 3 位数字且不再跟数字 → 千分位分组，**不是**新答案；
-    * ``,123`` / ``, 123`` / ``,\\n123`` / ``or 123`` / ``,$123$``：新数值 → 多答案；
+    * 复用 ``_TRAILING_NUMBER_RE``（``[+-]?`` + 整数/合法千分位 + 可选小数 + 可选百分号），
+      因此 ``,123``、``, -123``、``,-1,000``、``,+3``、``or -123`` 都按"另一个候选"处理；
+    * ``1,000``：逗号前是数字、后面正好是千分位分组 → 不是新答案；
     * ``.`` / ``so we are done`` / 空 → 不是数值。
     """
     stripped = text.lstrip(" \t\n$\\")
-    if stripped != text and stripped[:1].isdigit():
-        return True                                   # 空白/换行/公式符之后直接是数字
+    if _TRAILING_NUMBER_RE.match(stripped) and stripped != text:
+        return True                                   # 空白/换行/公式符之后直接是数值（含符号）
     if not stripped:
         return False
     if re.match(r"(?:frac|dfrac|tfrac)\b", stripped):
         return True
-    if not stripped[:1].isdigit():
+    if not _TRAILING_NUMBER_RE.match(stripped):
         return False
-    comma = re.match(r"[,;、][ \t]*", stripped)        # ``, 123`` / ``,123``
+    comma = re.match(r"[,;、][ \t]*", stripped)        # ``, 123`` / ``,123`` / ``, -123``
     if comma:
         after = re.sub(r"\s+", "", stripped[comma.end():])
         return not (stripped[:1] == "," and re.fullmatch(r"\d{3}", after))
