@@ -1,30 +1,32 @@
 # X-002 运行包（一次性工程试运行）
 
-**状态：R08 修补版，未运行。** 本轮只做本地编写与无模型离线检查；未安装、未下载、未运行模型、未操作目标机。
+**状态：R09 收口版，未运行。** 本轮只做本地编写与无模型离线检查；未安装、未下载、未运行模型、未操作目标机。
 **本版本尚未获得目标机运行准入**（可由 PI 验收后的 commit/tag 取代）。
+
+**仓库根目录就是这个运行包**：`git clone` 后的仓库根即包根，命令直接在这里执行，**不要再 `cd run_package`**。
 
 ## 1. 目录
 
 ```
-run_package/
+<仓库根>/
   config.json                  配置（模型/数据入口、上限、种子、反馈句、总截止、先导选题规则）
   requirements.txt             依赖（含已测组合与"区间内未全测"声明）
   README.md                    本文件
   VERSION_CONTROL.md           Git 版本管理约定（唯一活动源码 + 私有仓库）
   REVIEW_STATUS.md             当前审阅/运行准入状态
   SERVER_SYNC.md               服务器取代码流程（含"当前只可同步、不启动模型"）
-  run_offline_checks.sh        离线检查包装脚本（pipefail，失败即非零退出）
+  run_offline_checks.sh        离线检查包装脚本（失败即非零退出，留 .raw 原始输出）
   run_worker.py                工作进程入口脚本（正式路径与离线检查共用）
   exposed_problems_r06.json    R06 已暴露的 12 个题号（选题排除用）
   x002/
     judge.py                   答案抽取与数值等价判定（标量范围，范围外 UNKNOWN）
     prompts.py                 两臂消息、唯一编码路径、来源与完整结构核对
     generator.py               单一 transformers 后端（使用冻结 commit）+ 单次生成
-    worker.py                  工作进程：冻结身份 → 首轮 → 判分 → A/B → 汇总
+    worker.py                  工作进程：冻结身份 → 首轮 → 判分 → A/B → 汇总；源码身份采集
     pilot.py                   先导选题（排除已暴露 + 标量金标准 + 稳定哈希排序）
     cli.py                     父进程监督者：运行 / 只读汇总
     run.py                     记录、汇总分母与描述统计
-  tests/test_offline_checks.py 50 项离线回归检查（无模型、无网络）
+  tests/test_offline_checks.py 56 项离线回归检查（无模型、无网络）
   tests/fake_backend.py        测试替身后端（只替换外部模型，不复制业务循环）
 ```
 
@@ -44,34 +46,35 @@ git fetch origin --tags && git switch --detach <PI 指定的 commit 或 tag>   #
   datasets 3.6.0 / huggingface_hub 0.36.2 / sympy 1.13.1。其它版本**未知**，不得写成"版本不低于即兼容"。
 * 版本或导入不符 → **停止并回传**（`git rev-parse HEAD`、`git status --short`、版本打印与日志），
   不就地重装、不放宽判据。
-* 只有整包替换/整版本切换才动代码，不逐文件复制（历史教训见 `VERSION_CONTROL.md`）。
+* 只有整版本切换才动代码，不逐文件复制（历史教训见 `VERSION_CONTROL.md`）。
 * 模型与数据可**预缓存**（正式计时之前完成，不计入 44 分钟总截止）：
   `snapshot_download(repo_id="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")`；
   `load_dataset("HuggingFaceH4/MATH-500", split="test")`。
 
-**所有命令都先进入运行包目录**再执行。先跑离线检查（退出码非零或结尾不是 `OK` 就停止）：
+**所有命令都在仓库根目录执行**。先跑离线检查（退出码非零或结尾不是 `OK` 就停止）：
 
 ```bash
-bash run_offline_checks.sh offline_checks.log    # 期望：Ran 50 tests … OK
+bash run_offline_checks.sh offline_checks.log    # 期望：Ran 56 tests … OK
 ```
 
 （离线通过 **不代表** GPU 路径可用。）
 
-**当前状态（R08）**：R07 交接版未通过 PI 复跑（37 项中 1 项报错）与四项边界缺口，已在本批定点修补；
-历史事实：本包已于 2026-10-13 在单张 RTX 4090 上完成一次真实工程试运行（12 题、322.16 秒、
+**当前状态（R09）**：R08 的 50 项已由 PI 复跑通过；R08 遗留的两组定点缺口（判分答案区域、Git 产物与源码身份）
+已在本批收口。历史事实：本包已于 2026-10-13 在单张 RTX 4090 上完成一次真实工程试运行（12 题、322.16 秒、
 14 条生成记录、无错误；仅 1 对可判定 A/B），判读见 `20261013/research_R06/R06_首次试运行结果判读.md`，
 **不构成研究结论**。
 
 **版本与来源**：源码以 Git 管理（见 [VERSION_CONTROL.md](VERSION_CONTROL.md)、[REVIEW_STATUS.md](REVIEW_STATUS.md)）；
-运行头记录实际源码版本（Git commit + 是否有未提交改动，无 Git 时记文件摘要）与解析后的数据 commit。
+运行头记录实际源码版本（Git commit + 是否有未提交改动 + 只按受控清单计算的源码摘要）与解析后的数据 commit。
 
 **离线检查的实际范围**（与本节说明一致）：
 * 使用**离线 fixture** 提供身份与环境，**不访问 HuggingFace Hub、不下载**；断言"依赖已安装"时也不会被导入
   （用哨兵包验证：纯离线路径对 torch/transformers/datasets/sympy/huggingface_hub 的导入记录为空）。
 * 环境版本从**包元数据**读取（`importlib.metadata`），收集版本不会导入重依赖；符号判分默认关闭时**不导入 SymPy**。
 * 版本传递用例**同时**替换 torch 与 transformers 并完整恢复模块，因此在**未安装**这两个依赖的机器上也能跑
-  （本批已在一个未安装 torch/transformers/datasets/huggingface_hub 的解释器 Python 3.13.2 上实测 50 项全过）。
+  （已在一个未安装 torch/transformers/datasets/huggingface_hub 的解释器 Python 3.13.2 上实测全过）。
 * 短预算用例会在替身**进入阻塞点之后**写就绪凭据，再断言该阶段确已到达；启动阶段被截止另有一例单独覆盖。
+* 源码身份用例：合成日志/环境/缓存不改变源码摘要，改动受控源码必须改变摘要；无 Git 归档与 Git 模式用同一清单。
 * 仍**未**覆盖：真实 tokenizer/模型加载与生成、GPU 显存与吞吐、真实 Hub commit 解析、SymPy 判分分支。
 
 ## 2.1 版本切换（Git，勿逐文件挑）
@@ -88,7 +91,7 @@ bash run_offline_checks.sh offline_checks.log    # 期望：Ran 50 tests … OK
 ## 3. 唯一推荐命令
 
 ```bash
-cd run_package
+# 在仓库根目录（= 运行包根目录）执行，不要再 cd run_package
 python3 -m x002.cli run --config config.json          # 一次性运行到 config.paths.out_dir
 python3 -m x002.cli summarize --out-dir runs/x002_pilot_r08   # 只读汇总（可随时对已有日志运行）
 ```
@@ -147,14 +150,19 @@ python3 -m x002.cli summarize --out-dir runs/x002_pilot_r08   # 只读汇总（�
 * 范围外一律 **UNKNOWN（不判错）**：带单位、区间、集合、元组/坐标、矩阵、分段函数、
   非法逗号串（`1,2`）、多答案、抽不出答案、参考答案非标量。因此 `The answer is 2.5 cm.` 对 `2` → UNKNOWN。
 * 候选抽取**不做数字前缀回退**（不把 `2.5` 截成 `2`）。
-* **多答案/非法逗号串按完整候选区域判定**：候选之后到「空行」或「句末标点 + 下一句首字母大写」之间的
-  整段文字里，只要出现并列形态（`,` `;` `、` `or` `and` 之后紧跟数值）或同一行内还有别的完整数值，
-  一律 **UNKNOWN**。因此 `The answer is 1,2.` / `1, 2.` / `2.5, or 7.` / `$2.5$, or 7.` /
-  `$1$, or $2$.` / `1,\n2.` / `\boxed{1}, or 2` 都是 UNKNOWN；数字候选与公式候选走**同一条**规则。
-* 合法千分位 `1,000.`、单个小数/分数、`\boxed{497}`/`\boxed{129}` 不受影响；
-  “候选之后的另一段解释里恰好有数字”（空行之后）**不算**多答案。
-* 未覆盖（如实写，不在本批扩范围）：候选句结束后换行再写并列值（`The answer is 2.\nOr 3.`）目前按
-  该句只有一个候选处理；不含 `answer is/:` 的裸并列数值仍按“抽不出答案”处理；
+* **多答案/并列值按完整候选区域判定**：区域从候选之后取**最近的**边界——「空行」或
+  「句末标点 + 空白 + 下一句首字母大写/数学式」；但**行首并列连接词**（`\nOr 3`）不算边界，
+  它是备选答案的延续。区域内只要出现并列形态（`,` `;` `、` `or` `and` 之后紧跟数值，含跨换行）
+  或同一行内还有别的完整数值，一律 **UNKNOWN**。
+* 因此以下都是 UNKNOWN：`The answer is 1,2.` / `1, 2.` / `2.5, or 7.` / `$2.5$, or 7.` /
+  `$1$, or $2$.` / `1,\n2.` / `\boxed{1}, or 2` / **`2,\nor 123.`** / **`2,\n123.`** /
+  **`\boxed{2},\nor 123.`** / **`2.\nOr 3.`** / `1, 000.`。裸数字、公式、`\boxed{}`、`####`
+  四类候选走**同一条**规则。
+* 保留：合法千分位 `1,000.`（只有**完整合法千分位**才受支持，三位数备选值不会被当成千分位片段）、
+  单个小数/分数、`\boxed{497}`/`\boxed{129}`；句末边界取最近，因此
+  `The answer is 2. We used 3 terms.` 后面再补 `\n\nMore discussion.` 仍是同一个单答案判断；
+  `The answer is 2.\nWe checked 3 alternatives.` 这类**普通后续说明**也不算第二答案。
+* 未覆盖（如实写，不在本批扩范围）：不含 `answer is/:` 的裸并列数值仍按“抽不出答案”处理；
   LaTeX 千分位写法（`$1{,}000$`）一律 UNKNOWN，本批不新增该写法支持。
 * 符号判错路径默认关闭（`judge.symbolic=false`）；**该分支未在真实数据上验证**——环境装有 SymPy 也不代表已测（关闭时不会导入 SymPy）。
 * 标准答案只用于判分与日志，**不进入任何消息**。
@@ -188,19 +196,25 @@ python3 -m x002.cli summarize --out-dir runs/x002_pilot_r08   # 只读汇总（�
   两臂差值直接取均值，不运行已不展示的 bootstrap 计算。
 * 截断但碰巧含答案**不算正常完成**；UNKNOWN 与运行错误**不会**被隐式当作答错。
 
-## 9.1 R08 定点修补要点（供核对）
+## 9.1 R08/R09 定点修补要点（供核对）
 
 * **离线测试隔离**：版本传递用例**同时**替换 torch 与 transformers，并在 finally 里完整恢复原模块
   （含"原本不存在"的情形）；在未安装这两个依赖的环境里也通过；真实子进程哨兵、加载/生成阻塞、
   截止与进程清理检查全部保留。
-* **保守判分边界**：PI 给出的三个反例必须 UNKNOWN（`$2.5$, or 7.`、`$1$, or $2$.`、`1,\n2.`）；
-  数字与公式候选共用同一套完整区域规则；回归含正例与反例表，不只匹配这三个字符串；
+* **判分答案区域（R09 收口）**：区域取**最近**边界；跨行三位数备选值（`2,\nor 123.`、`2,\n123.`、
+  `\boxed{2},\nor 123.`）与句末换行延续（`2.\nOr 3.`）一律 UNKNOWN；只有完整合法千分位受支持；
+  普通后续说明不机械算第二答案；裸数字/公式/`\boxed{}`/`####` 四类候选共用同一条规则；
   未扩大单位/集合/区间/坐标/复数的判分范围。
 * **实际 commit 接线**：解析后的数据 commit 同时传入数据加载、选题排序与运行头；缺失即拒绝继续。
   核验走真实读题器 + 运行头构造，不只测 pilot 函数。运行头记录协议版本、种子、完整排除 ID 清单、
   选题规则所用实际 commit、逐层分母与 subject/level 组成、`selected_ids_sha16`、`code_version`。
 * **完整分母**：摘要从运行头导出入组/首轮/各臂分母，覆盖“首轮中断”“两臂之一缺失”“两臂都有但不可判定”
   “无运行头历史日志”四类；JSON 与文本一致。
+* **Git 产物与源码身份（R09）**：`.gitignore` 恢复 R07 原始排除集并补齐实际产物
+  （`.venv/`、`.env.*`、`*.pt`/`*.pem`、`cache/`、`datasets/`、`outputs/`、`results/`、`*.tar.gz`、`*.zip`、
+  `*.log.raw`、`code_version.txt` 等）；`capture_code_version()` 只按受控清单计算源码摘要，
+  记录 `source_mode`(git/archive)、`dirty`、`manifest_files/missing`、`manifest_sha16`，
+  不扫描日志、环境、缓存与权重；已验证“干净克隆 → 运行离线包装 → `git status` 仍干净”。
 * **交接顺序**：**先部署指定版本，再核对环境与离线检查**；版本不符或导入失败停止回传，不自动安装/升级。
 
 ## 10. 预算与未验证路径
