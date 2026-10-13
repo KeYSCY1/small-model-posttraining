@@ -33,9 +33,9 @@
     "n_problems": 12,
     "selection_rule": "见 pilot.rule；当 pilot 段存在时 data 段的任何选择说明都不生效",
     "selection_note": "本配置含 pilot 段，实际选题由 pilot.rule 执行（排除已暴露 + 标量金标准 + 稳定哈希排序取前 N）；旧字典序规则仅在无 pilot 段时生效。",
-    "n_problems_note": "本轮目标题量上限 12（30 题池先核查题面与金标准，再按既有稳定哈希规则固定，不按模型结果或题号难易挑题）；不足时如实记录 shortfall，不放宽筛选。",
     "gold_unbox": true,
-    "gold_unbox_note": "solution 此版本为单一 \\boxed{整数}；gold_unbox 只脱去外层 LaTeX 包裹，不提取首个数字、不改写内容；脱壳后仍不支持的形态照旧拒绝。旧 MATH 配置不设该开关。"
+    "gold_unbox_note": "solution 此版本为单一 \\boxed{整数}；gold_unbox 只脱去外层 LaTeX 包裹，不提取首个数字、不改写内容；脱壳后仍不支持的形态照旧拒绝。旧 MATH 配置不设该开关。",
+    "n_problems_note": "本轮目标题量上限 12；选题从固定版本**完整 30 题池**按既有稳定哈希规则固定，无结构性剔除，不按模型结果或题号难易挑题。"
   },
   "feedback": {
     "text": "此前对本题的一次作答未通过自动检查，请重新求解本题。"
@@ -63,8 +63,10 @@
     "seed": 20261013,
     "exposed_ids_path": "exposed_problems_aime24.json",
     "rule": "sha256(protocol|dataset_revision|seed|unique_id|normalized_gold) ascending, take first N",
-    "note": "与模型输出无关的预先确定规则：先排除本项目已暴露的 AIME 题，再只取现行判分支持的标量金标准（缺图题在生成前另行排除），再按稳定哈希排序取前 12。",
+    "note": "与模型输出无关的预先确定规则：先排除本项目已暴露的 AIME 题（当前为空），再只取现行判分支持的标量金标准，再按稳定哈希排序取前 12；本轮无结构性剔除（71/81/88 经完整题面核对后保留）。",
     "dataset_revision_source": "运行头记录的**解析后** commit；同一 commit 同时支配读数据、选题排序、题单摘要与运行头；缺失则拒绝继续（不使用空串）",
-    "note_missing_figure": "题面依赖未提供图示的题（见 AIME2024_数据核验与题单.json）在冻结清单前排除，并记录题号、依据与分母。"
+    "frozen_list_path": "frozen_problems_aime24.json",
+    "frozen_list_note": "生成前核对：冻结清单与生产读题路径算出的题单/摘要必须一致，不一致在**加载模型之前**停止（verify_frozen）。",
+    "verify_frozen": true
   }
 }

@@ -137,6 +137,9 @@ _VERSION_PACKAGES = ("torch", "transformers", "datasets", "sympy", "huggingface_
 MANIFEST_PATHS = (
     ".gitignore",
     "config.json",
+    "config_aime24.json",
+    "exposed_problems_aime24.json",
+    "frozen_problems_aime24.json",
     "exposed_problems_r06.json",
     "requirements.txt",
     "run_offline_checks.sh",
@@ -356,8 +359,11 @@ def _freeze_selection_pilot(reader, cfg: dict, d: dict, dataset_revision: str) -
         raise RuntimeError(f"选中的题目在数据集中读取失败，拒绝继续：{missing}")
     if len(problems) < 2:
         raise RuntimeError("按先导规则选出的题目不足 2 道，拒绝继续（不放宽筛选条件）")
+    # 统一顺序：题号升序（运行头/冻结清单同序）；哈希排序保留在 selection.selected_ids_hash_order
+    problems = sorted(problems, key=lambda p: p["problem_id"])
     selection = {
         "rule": result["selection"]["rule"],
+        "selected_ids_hash_order": list(result["selection"]["selected_ids"]),
         "dataset_revision_used_for_sorting": str(dataset_revision),
         "protocol_version": result["selection"]["protocol_version"],
         "n_problems": len(problems),
@@ -372,7 +378,58 @@ def _freeze_selection_pilot(reader, cfg: dict, d: dict, dataset_revision: str) -
     return problems, selection
 
 
-def build_run_header(cfg, model_ident, dataset_ident, selection, problems, budget_seconds, out_dir) -> dict:
+def load_frozen_list(cfg: dict) -> dict | None:
+    """读取配置指定的轻量冻结题单（``pilot.frozen_list_path``）。路径相对本包目录。"""
+    p = (cfg.get("pilot") or {}).get("frozen_list_path")
+    if not p:
+        return None
+    path = p if os.path.isabs(p) else os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", p)
+    with open(os.path.abspath(path), encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def verify_frozen_selection(cfg: dict, problems: list, selection: dict, dataset_revision: str | None) -> dict | None:
+    """**加载模型之前**核对题单：与冻结清单的 ID 列表、摘要、数据 commit、协议版本必须一致。
+
+    不一致就 ``RuntimeError`` 停止，避免"生成后才发现换题"。返回核对结果供写入运行头。
+    """
+    pilot_cfg = cfg.get("pilot") or {}
+    if not pilot_cfg.get("verify_frozen"):
+        return None
+    frozen = load_frozen_list(cfg)
+    if frozen is None:
+        raise RuntimeError("配置要求核对冻结题单（verify_frozen=true），但未提供 pilot.frozen_list_path")
+    actual_ids = sorted(p["problem_id"] for p in problems)
+    expected_ids = sorted(str(i) for i in frozen.get("selected_ids") or [])
+    checks = {
+        "frozen_list": pilot_cfg.get("frozen_list_path"),
+        "expected_ids_sha16": frozen.get("selected_ids_sha16"),
+        "actual_ids_sha16": selection.get("selected_ids_sha16"),
+        "expected_dataset_revision": frozen.get("dataset_revision"),
+        "actual_dataset_revision": dataset_revision,
+        "expected_protocol_version": frozen.get("protocol_version"),
+        "actual_protocol_version": selection.get("protocol_version"),
+        "n_expected": len(expected_ids), "n_actual": len(actual_ids),
+    }
+    bad = []
+    if actual_ids != expected_ids:
+        bad.append(f"题单不一致：actual={actual_ids} expected={expected_ids}")
+    if selection.get("selected_ids_sha16") != frozen.get("selected_ids_sha16"):
+        bad.append(f"题单摘要不一致：actual={selection.get('selected_ids_sha16')} "
+                   f"expected={frozen.get('selected_ids_sha16')}")
+    if str(frozen.get("dataset_revision")) != str(dataset_revision):
+        bad.append(f"数据 commit 不一致：actual={dataset_revision} expected={frozen.get('dataset_revision')}")
+    if str(frozen.get("protocol_version")) != str(selection.get("protocol_version")):
+        bad.append(f"协议版本不一致：actual={selection.get('protocol_version')} "
+                   f"expected={frozen.get('protocol_version')}")
+    if bad:
+        raise RuntimeError("冻结题单核对失败，拒绝继续（未加载模型）：" + "；".join(bad))
+    checks["ok"] = True
+    return checks
+
+
+def build_run_header(cfg, model_ident, dataset_ident, selection, problems, budget_seconds, out_dir,
+                     frozen_check: dict | None = None) -> dict:
     return {
         "kind": "run",
         "schema": 3,
@@ -396,6 +453,7 @@ def build_run_header(cfg, model_ident, dataset_ident, selection, problems, budge
         "judge_version": JUDGE_VERSION,
         "env": (OFFLINE_FIXTURE or {}).get("env") or capture_env(),
         "code_version": capture_code_version(),
+        "frozen_selection_check": frozen_check,
         "note": "一次性运行：本目录开始后拒绝再次生成，只允许汇总。",
     }
 
@@ -426,7 +484,10 @@ def run_attempt(
     reader = reader or DatasetReader(cfg, dataset_ident)
     # 同一 commit 同时支配：读数据（DatasetReader）、选题排序、运行头
     problems, selection = freeze_selection(reader, cfg, dataset_revision=dataset_ident.get("revision"))
-    header = build_run_header(cfg, model_ident, dataset_ident, selection, problems, budget_seconds, out_dir)
+    # 加载模型**之前**核对冻结题单：不一致立即停止（不改题、不静默换题）
+    frozen_check = verify_frozen_selection(cfg, problems, selection, dataset_ident.get("revision"))
+    header = build_run_header(cfg, model_ident, dataset_ident, selection, problems, budget_seconds, out_dir,
+                              frozen_check=frozen_check)
     header["started_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime())
     if header_extra:
         header.update(header_extra)

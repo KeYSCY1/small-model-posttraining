@@ -1619,5 +1619,141 @@ class TestAime24Adapter(unittest.TestCase):
                 self.assertEqual(eligible, want_eligible)
 
 
+class TestAime24ProductionSelection(unittest.TestCase):
+    """R12：用**缓存固定版本的原始 AIME rows**（id/problem/solution/url）走
+    DatasetReader → freeze_selection → 运行头，并核对冻结题单闸门在加载模型前生效。
+
+    只替换外部 ``datasets.load_dataset``（本机未安装 datasets）；rows 必须来自固定版本缓存，
+    不手填归一化后的 problem_id/gold，从而覆盖 R11 漏掉的真实适配路径。
+    """
+
+    CACHE = os.path.join(os.path.dirname(os.path.dirname(ROOT)),
+                         "research_R11", "cache", "aime24_test_pinned.parquet")
+    REV = "83a7f387baaa524a8bda0022eac0541582297103"
+
+    @classmethod
+    def _rows(cls):
+        if not os.path.exists(cls.CACHE):
+            raise unittest.SkipTest(f"未找到固定版本缓存：{cls.CACHE}")
+        try:
+            import pandas as pd
+        except Exception as exc:                      # pragma: no cover
+            raise unittest.SkipTest(f"缺少 parquet 读取器：{exc}")
+        return pd.read_parquet(cls.CACHE).to_dict(orient="records")
+
+    def _cfg(self, tmp, *, verify=True):
+        cfg = json.load(open(os.path.join(ROOT, "config_aime24.json"), encoding="utf-8"))
+        cfg = json.loads(json.dumps(cfg))
+        cfg["paths"]["out_dir"] = os.path.join(tmp, "out")
+        cfg["pilot"]["exposed_ids_path"] = os.path.join(ROOT, "exposed_problems_aime24.json")
+        if not verify:
+            cfg["pilot"]["verify_frozen"] = False
+        return cfg
+
+    def _fake_datasets(self, rows, calls):
+        fake = types.ModuleType("datasets")
+
+        class DS(list):
+            pass
+
+        def load_dataset(dataset_id, split=None, revision=None, **kw):
+            calls.append({"dataset_id": dataset_id, "split": split, "revision": revision})
+            return DS(rows)
+        fake.load_dataset = load_dataset
+        return fake
+
+    def test_real_rows_through_reader_and_freeze_selection(self):
+        from x002 import worker as W
+
+        rows = self._rows()
+        calls = []
+        saved = sys.modules.get("datasets")
+        sys.modules["datasets"] = self._fake_datasets(rows, calls)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg = self._cfg(tmp)
+                reader = W.DatasetReader(cfg, {"dataset_id": cfg["data"]["dataset_id"],
+                                               "split": "test", "revision": self.REV})
+                ids = reader.list_ids()
+                problems, selection = W.freeze_selection(reader, cfg, dataset_revision=self.REV)
+                gate = W.verify_frozen_selection(cfg, problems, selection, self.REV)
+                header = W.build_run_header(cfg, {"revision": "model-rev"}, {"revision": self.REV},
+                                            selection, problems, 2700, cfg["paths"]["out_dir"],
+                                            frozen_check=gate)
+        finally:
+            if saved is None:
+                sys.modules.pop("datasets", None)
+            else:
+                sys.modules["datasets"] = saved
+        self.assertEqual(len(ids), 30, "固定版本原池必须计入全部 30 题")
+        self.assertEqual(calls[0]["revision"], self.REV, "读数据必须用固定 commit")
+        self.assertEqual(selection["layers"]["pool_total"], 30)
+        self.assertEqual(selection["layers"]["selected"], 12)
+        self.assertEqual(selection["layers"]["shortfall"], 0)
+        self.assertIn("aime24:71", [p["problem_id"] for p in problems],
+                      "71 文字条件完整，应保留在题单中")
+        self.assertIn("aime24:88", [p["problem_id"] for p in problems])
+        self.assertEqual(selection["selected_ids_sha16"], "951787dd1e77c128")
+        self.assertTrue(gate and gate["ok"], gate)
+        self.assertEqual(header["frozen_selection_check"]["actual_ids_sha16"], "951787dd1e77c128")
+        self.assertEqual(header["selection"]["dataset_revision_used_for_sorting"], self.REV)
+        self.assertEqual(header["dataset"]["revision"], self.REV)
+        self.assertEqual(header["run_protocol_version"], "x002-aime24-pilot-r11.1")
+        self.assertEqual([p["problem_id"] for p in header["problems"]],
+                         sorted(p["problem_id"] for p in problems))
+
+    def test_frozen_list_mismatch_stops_before_loading_model(self):
+        from x002 import worker as W
+
+        rows = self._rows()
+        calls = []
+        saved = sys.modules.get("datasets")
+        sys.modules["datasets"] = self._fake_datasets(rows, calls)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg = self._cfg(tmp)
+                tampered = os.path.join(tmp, "frozen_tampered.json")
+                with open(os.path.join(ROOT, "frozen_problems_aime24.json"), encoding="utf-8") as fh:
+                    frozen = json.load(fh)
+                frozen["selected_ids"] = frozen["selected_ids"][:-1]      # 少一题
+                _write(tampered, frozen)
+                cfg["pilot"]["frozen_list_path"] = tampered
+                reader = W.DatasetReader(cfg, {"dataset_id": cfg["data"]["dataset_id"],
+                                               "split": "test", "revision": self.REV})
+                problems, selection = W.freeze_selection(reader, cfg, dataset_revision=self.REV)
+                with self.assertRaises(RuntimeError) as ctx:
+                    W.verify_frozen_selection(cfg, problems, selection, self.REV)
+                self.assertIn("冻结题单核对失败", str(ctx.exception))
+                # 冻结清单文件本身未被改动（不静默换题）
+                self.assertEqual(len(json.load(open(os.path.join(ROOT, "frozen_problems_aime24.json"),
+                                                    encoding="utf-8"))["selected_ids"]), 12)
+        finally:
+            if saved is None:
+                sys.modules.pop("datasets", None)
+            else:
+                sys.modules["datasets"] = saved
+
+    def test_controlled_aime_files_change_source_summary(self):
+        """config_aime24 / exposed / frozen 三份新增受控文件被改动时，源码摘要必须变化。"""
+        from x002 import worker as W
+
+        for rel in ("config_aime24.json", "exposed_problems_aime24.json", "frozen_problems_aime24.json"):
+            with self.subTest(rel=rel):
+                with tempfile.TemporaryDirectory() as tmp:
+                    fixture = os.path.join(tmp, "pkg")
+                    for r in W.MANIFEST_PATHS:
+                        dst = os.path.join(fixture, r)
+                        os.makedirs(os.path.dirname(dst), exist_ok=True)
+                        shutil_copy = __import__("shutil").copyfile
+                        shutil_copy(os.path.join(ROOT, r), dst)
+                    before = W.capture_code_version(fixture)
+                    with open(os.path.join(fixture, rel), "a", encoding="utf-8") as fh:
+                        fh.write("\n")
+                    after = W.capture_code_version(fixture)
+                self.assertNotEqual(before["files_sha16"], after["files_sha16"],
+                                    f"{rel} 必须在受控摘要覆盖范围内")
+                self.assertIn(rel, before["manifest"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

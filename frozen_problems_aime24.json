@@ -1,0 +1,41 @@
+{
+  "dataset_id": "math-ai/aime24",
+  "split": "test",
+  "dataset_revision": "83a7f387baaa524a8bda0022eac0541582297103",
+  "protocol_version": "x002-aime24-pilot-r11.1",
+  "seed": 20261013,
+  "max_problems": 12,
+  "rule": "sha256(protocol|dataset_revision|seed|unique_id|normalized_gold) ascending, take first N",
+  "pool_total": 30,
+  "layers": {
+    "pool_total": 30,
+    "exposed_ids_provided": 0,
+    "exposed_removed": 0,
+    "after_exposure_filter": 30,
+    "non_scalar_removed": 0,
+    "scalar_candidates": 30,
+    "target": 12,
+    "selected": 12,
+    "shortfall": 0,
+    "removed_form_reasons": {}
+  },
+  "excluded_before_generation": [],
+  "exclusion_note": "经逐题核对完整题面（见 20261013/research_R12/AIME2024_三题题面核查.md），原 R11 排除的 71/81/88 文字条件完整、[asy]/示例图仅为示例，故**不排除**；本清单从完整 30 题池按稳定哈希规则选出，无结构性剔除。",
+  "selected_ids": [
+    "aime24:61",
+    "aime24:88",
+    "aime24:78",
+    "aime24:65",
+    "aime24:77",
+    "aime24:83",
+    "aime24:85",
+    "aime24:70",
+    "aime24:71",
+    "aime24:82",
+    "aime24:89",
+    "aime24:68"
+  ],
+  "selected_ids_sha16": "951787dd1e77c128",
+  "selected_ids_sha16_note": "仅对排序后的题目 ID 列表（逗号连接）取 sha256 前 16 位；排序键另含协议版本/数据 commit/种子/归一化金标准，摘要本身不直接哈希这些字段。",
+  "source_verification": "20261013/research_R12/AIME2024_数据核验与题单.json"
+}
