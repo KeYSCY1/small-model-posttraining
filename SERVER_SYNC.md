@@ -56,7 +56,7 @@ frozen = json.load(open("frozen_problems_aime24.json", encoding="utf-8"))
 print(frozen["selected_ids_sha16"], len(frozen["selected_ids"]),
       frozen["dataset_revision"])
 PY
-# 期望输出：951787dd1e77c128 12 83a7f387baaa524a8bda0022eac0541582297103
+# 期望输出：e7fd0ff6c3875ed1 11 83a7f387baaa524a8bda0022eac0541582297103
 ```
 
 正式运行会在**加载模型之前**自动核对题单与冻结清单；不一致会直接报错停止，不会换题后再发现。

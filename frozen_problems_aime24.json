@@ -4,26 +4,31 @@
   "dataset_revision": "83a7f387baaa524a8bda0022eac0541582297103",
   "protocol_version": "x002-aime24-pilot-r11.1",
   "seed": 20261013,
-  "max_problems": 12,
+  "max_problems": 11,
   "rule": "sha256(protocol|dataset_revision|seed|unique_id|normalized_gold) ascending, take first N",
   "pool_total": 30,
   "layers": {
-    "pool_total": 30,
+    "pool_total_raw": 30,
+    "data_quality_removed": 1,
+    "data_quality_removed_ids": [
+      "aime24:88"
+    ],
+    "pool_total_after_quality": 29,
     "exposed_ids_provided": 0,
     "exposed_removed": 0,
-    "after_exposure_filter": 30,
+    "after_exposure_filter": 29,
     "non_scalar_removed": 0,
-    "scalar_candidates": 30,
-    "target": 12,
-    "selected": 12,
+    "scalar_candidates": 29,
+    "target": 11,
+    "selected": 11,
     "shortfall": 0,
-    "removed_form_reasons": {}
+    "removed_form_reasons": {},
+    "pool_total": 30
   },
   "excluded_before_generation": [],
-  "exclusion_note": "经逐题核对完整题面（见 20261013/research_R12/AIME2024_三题题面核查.md），原 R11 排除的 71/81/88 文字条件完整、[asy]/示例图仅为示例，故**不排除**；本清单从完整 30 题池按稳定哈希规则选出，无结构性剔除。",
+  "exclusion_note": "71/81/88 中的 71、81 经完整题面核对后保留（图示仅为示例）；88 因源数据题面误写而排除（与图示无关）。",
   "selected_ids": [
     "aime24:61",
-    "aime24:88",
     "aime24:78",
     "aime24:65",
     "aime24:77",
@@ -35,7 +40,17 @@
     "aime24:89",
     "aime24:68"
   ],
-  "selected_ids_sha16": "951787dd1e77c128",
+  "selected_ids_sha16": "e7fd0ff6c3875ed1",
   "selected_ids_sha16_note": "仅对排序后的题目 ID 列表（逗号连接）取 sha256 前 16 位；排序键另含协议版本/数据 commit/种子/归一化金标准，摘要本身不直接哈希这些字段。",
-  "source_verification": "20261013/research_R12/AIME2024_数据核验与题单.json"
+  "source_verification": "20261013/research_R12/AIME2024_数据核验与题单.json",
+  "data_quality_exclusions": [
+    {
+      "id": "aime24:88",
+      "reason": "源数据题面误写：两种情况都写成 rests on the outside/externally tangent，与金标准 127 所对应的正确条件（r_i 为内切、r_o 为外切）不符；PI 已与获 MAA 许可的原题页面核对。",
+      "source": "https://artofproblemsolving.com/wiki/index.php/2024_AIME_II_Problems/Problem_8",
+      "verified_by": "PI（20261013/research_R12/检查输出/PI_source_defect_aime24_88.json）",
+      "action": "生成前排除，不修题面、不加线索、不把该题失败计为自然错误、不补新题"
+    }
+  ],
+  "data_quality_note": "生成前数据质量排除 aime24:88（题面把两种情况都写成 outside/externally tangent，与金标准对应的内切/外切条件不符；PI 已核对获 MAA 许可的原题页面）。不修题面、不加线索、不把该题失败计为自然错误、不补新题。"
 }

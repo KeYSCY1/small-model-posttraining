@@ -332,10 +332,39 @@ def freeze_selection(reader, cfg: dict, dataset_revision: str | None = None) -> 
                       "dataset_revision_used_for_sorting": str(dataset_revision or "not_applicable")}
 
 
+def _load_data_quality_exclusions(cfg: dict) -> list[dict]:
+    """数据质量排除（生成前）：配置里的 ``pilot.data_quality_exclusions``，只在正式选题路径使用。
+
+    与"已暴露"分开：这些题不是历史生成暴露，而是**源数据本身有问题**（如题面误写），
+    因此单独计数并在运行头/冻结清单里说明。旧配置无该字段时返回空列表，行为不变。
+    """
+    items = (cfg.get("pilot") or {}).get("data_quality_exclusions") or []
+    out = []
+    for it in items:
+        if isinstance(it, str):
+            out.append({"id": str(it), "reason": "未注明", "source": None})
+        else:
+            out.append({"id": str(it["id"]), "reason": it.get("reason", "未注明"),
+                        "source": it.get("source"), "verified_by": it.get("verified_by"),
+                        "action": it.get("action")})
+    return out
+
+
 def _freeze_selection_pilot(reader, cfg: dict, d: dict, dataset_revision: str) -> tuple[list[dict], dict]:
     pilot_cfg = dict(cfg["pilot"])
     exposed = _load_exposed_ids(cfg)
     rows = reader.list_rows()
+    quality = _load_data_quality_exclusions(cfg)
+    pool_total_raw = len(rows)          # 原池（未剔除）：分母从 30 记起，不重写为 29
+    quality_removed_ids: list[str] = []
+    if quality:
+        available = {str(r["unique_id"]) for r in rows}
+        missing = sorted(set(e["id"] for e in quality) - available)
+        if missing:
+            raise RuntimeError(f"数据质量排除题号在原池中不存在，拒绝继续（不静默失效）：{missing}")
+        drop = set(e["id"] for e in quality)
+        quality_removed_ids = sorted(drop)
+        rows = [r for r in rows if str(r["unique_id"]) not in drop]
     result = pilot_mod.select_pilot_problems(
         rows,
         exposed_ids=exposed,
@@ -372,8 +401,18 @@ def _freeze_selection_pilot(reader, cfg: dict, d: dict, dataset_revision: str) -
         "shortfall": result["layers"]["shortfall"],
         "selected_ids_sha16": result["selection"]["selected_ids_sha16"],
         "composition": result["selection"]["composition"],
-        "layers": result["layers"],
+        # 逐层分母：原池 → 数据质量剔除 → 质量合格池 → 暴露剔除 → 非标量剔除 → 候选 → 入组
+        "layers": {
+            "pool_total_raw": pool_total_raw,
+            "data_quality_removed": len(quality_removed_ids),
+            "data_quality_removed_ids": quality_removed_ids,
+            "pool_total_after_quality": len(rows),
+            **{k: v for k, v in result["layers"].items() if k != "pool_total"},
+            "pool_total": pool_total_raw,
+        },
         "exposed_ids_count": len(result["selection"]["exposed_ids"]),
+        "data_quality_exclusions": quality,
+        "data_quality_removed": len(quality_removed_ids),
     }
     return problems, selection
 

@@ -1685,17 +1685,23 @@ class TestAime24ProductionSelection(unittest.TestCase):
                 sys.modules.pop("datasets", None)
             else:
                 sys.modules["datasets"] = saved
-        self.assertEqual(len(ids), 30, "固定版本原池必须计入全部 30 题")
+        self.assertEqual(len(ids), 30, "固定版本原池必须计入全部 30 题（不重写为 29）")
         self.assertEqual(calls[0]["revision"], self.REV, "读数据必须用固定 commit")
-        self.assertEqual(selection["layers"]["pool_total"], 30)
-        self.assertEqual(selection["layers"]["selected"], 12)
-        self.assertEqual(selection["layers"]["shortfall"], 0)
+        layers = selection["layers"]
+        self.assertEqual(layers["pool_total_raw"], 30, "原池记 30，不重写为 29")
+        self.assertEqual(layers["data_quality_removed"], 1)
+        self.assertEqual(layers["data_quality_removed_ids"], ["aime24:88"])
+        self.assertEqual(layers["pool_total_after_quality"], 29)
+        self.assertEqual(layers["selected"], 11)
+        self.assertEqual(layers["shortfall"], 0)
         self.assertIn("aime24:71", [p["problem_id"] for p in problems],
                       "71 文字条件完整，应保留在题单中")
-        self.assertIn("aime24:88", [p["problem_id"] for p in problems])
-        self.assertEqual(selection["selected_ids_sha16"], "951787dd1e77c128")
+        self.assertNotIn("aime24:88", [p["problem_id"] for p in problems],
+                         "源数据题面误写的 88 必须被质量排除，且不补新题")
+        self.assertEqual(len(problems), 11)
+        self.assertEqual(selection["selected_ids_sha16"], "e7fd0ff6c3875ed1")
         self.assertTrue(gate and gate["ok"], gate)
-        self.assertEqual(header["frozen_selection_check"]["actual_ids_sha16"], "951787dd1e77c128")
+        self.assertEqual(header["frozen_selection_check"]["actual_ids_sha16"], "e7fd0ff6c3875ed1")
         self.assertEqual(header["selection"]["dataset_revision_used_for_sorting"], self.REV)
         self.assertEqual(header["dataset"]["revision"], self.REV)
         self.assertEqual(header["run_protocol_version"], "x002-aime24-pilot-r11.1")
@@ -1726,7 +1732,7 @@ class TestAime24ProductionSelection(unittest.TestCase):
                 self.assertIn("冻结题单核对失败", str(ctx.exception))
                 # 冻结清单文件本身未被改动（不静默换题）
                 self.assertEqual(len(json.load(open(os.path.join(ROOT, "frozen_problems_aime24.json"),
-                                                    encoding="utf-8"))["selected_ids"]), 12)
+                                                    encoding="utf-8"))["selected_ids"]), 11)
         finally:
             if saved is None:
                 sys.modules.pop("datasets", None)

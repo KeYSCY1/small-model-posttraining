@@ -30,12 +30,12 @@
     "id_note": "原始 id 为整数（60–89），转成稳定字符串并加 aime24: 命名空间；拒绝缺失/空/重复身份，整数 0 视为合法。",
     "url_field": "url",
     "url_note": "保留原题来源链接便于追溯；不进入提示。",
-    "n_problems": 12,
+    "n_problems": 11,
     "selection_rule": "见 pilot.rule；当 pilot 段存在时 data 段的任何选择说明都不生效",
     "selection_note": "本配置含 pilot 段，实际选题由 pilot.rule 执行（排除已暴露 + 标量金标准 + 稳定哈希排序取前 N）；旧字典序规则仅在无 pilot 段时生效。",
     "gold_unbox": true,
     "gold_unbox_note": "solution 此版本为单一 \\boxed{整数}；gold_unbox 只脱去外层 LaTeX 包裹，不提取首个数字、不改写内容；脱壳后仍不支持的形态照旧拒绝。旧 MATH 配置不设该开关。",
-    "n_problems_note": "本轮目标题量上限 12；选题从固定版本**完整 30 题池**按既有稳定哈希规则固定，无结构性剔除，不按模型结果或题号难易挑题。"
+    "n_problems_note": "本轮目标题量上限 11：原池 30 题先做**数据质量排除**（aime24:88，见下），再按既有稳定哈希规则取前 11；不补新题、不按模型结果或题号难易挑题。"
   },
   "feedback": {
     "text": "此前对本题的一次作答未通过自动检查，请重新求解本题。"
@@ -59,7 +59,7 @@
   "run_protocol_version": "x002-aime24-pilot-r11.1",
   "pilot": {
     "protocol_version": "x002-aime24-pilot-r11.1",
-    "max_problems": 12,
+    "max_problems": 11,
     "seed": 20261013,
     "exposed_ids_path": "exposed_problems_aime24.json",
     "rule": "sha256(protocol|dataset_revision|seed|unique_id|normalized_gold) ascending, take first N",
@@ -67,6 +67,16 @@
     "dataset_revision_source": "运行头记录的**解析后** commit；同一 commit 同时支配读数据、选题排序、题单摘要与运行头；缺失则拒绝继续（不使用空串）",
     "frozen_list_path": "frozen_problems_aime24.json",
     "frozen_list_note": "生成前核对：冻结清单与生产读题路径算出的题单/摘要必须一致，不一致在**加载模型之前**停止（verify_frozen）。",
-    "verify_frozen": true
+    "verify_frozen": true,
+    "data_quality_exclusions": [
+      {
+        "id": "aime24:88",
+        "reason": "源数据题面误写：两种情况都写成 rests on the outside/externally tangent，与金标准 127 所对应的正确条件（r_i 为内切、r_o 为外切）不符；PI 已与获 MAA 许可的原题页面核对。",
+        "source": "https://artofproblemsolving.com/wiki/index.php/2024_AIME_II_Problems/Problem_8",
+        "verified_by": "PI（20261013/research_R12/检查输出/PI_source_defect_aime24_88.json）",
+        "action": "生成前排除，不修题面、不加线索、不把该题失败计为自然错误、不补新题"
+      }
+    ],
+    "data_quality_exclusions_note": "数据质量排除在**哈希选择之前**执行，与原池暴露排除分开记录；配置中的排除题号若在原池匹配不到则明确失败。"
   }
 }
