@@ -1,6 +1,12 @@
 # 实验代码版本管理
 
-唯一活动源码保留在现有run_package目录。该目录本身是Git仓库；项目其余论文、阅读材料、日期归档和真实实验结果不纳入此代码仓库。远端计划为用户已选择的GitHub私有仓库，创建完成后记录实际地址。
+唯一活动源码保留在现有run_package目录。该目录本身是Git仓库；项目其余论文、阅读材料、日期归档和真实实验结果不纳入此代码仓库。
+
+远端私有仓库：https://github.com/KeYSCY1/small-model-posttraining
+
+本地origin：https://github.com/KeYSCY1/small-model-posttraining.git
+
+首次源码提交为 `db2b520a90a5a19735319b732aa0b49cca4aaffb`，已推送main。服务器操作见 [SERVER_SYNC.md](SERVER_SYNC.md)。当前提交仍为R07待修状态，不构成模型运行准入。
 
 ## 日常流程
 
