@@ -34,6 +34,7 @@ from fractions import Fraction
 
 __all__ = [
     "judge",
+    "gold_value",
     "gold_supported",
     "extract_answer",
     "normalize",
@@ -445,6 +446,25 @@ def gold_supported(gold: str | None) -> tuple[bool, str]:
     if not _is_supported_scalar(norm):
         return False, "unsupported_form:not_a_supported_scalar"
     return True, "supported"
+
+
+def gold_value(raw, *, unbox: bool = False) -> str | None:
+    """金标准字段 → 判分/筛选用标量。
+
+    AIME 2024 的 ``solution`` 此版本只含单一 ``\\boxed{整数}``，而选题与判分需要裸标量；
+    打开 ``unbox`` 时**复用与回答抽取同一套** ``\\boxed{}`` 解析（:func:`extract_answer`），
+    只脱去 LaTeX 包裹，不提取"第一个数字"、不改写内容；脱壳后仍不支持的形态（区间/多答案/空值）
+    照旧由 :func:`gold_supported` 拒绝。默认 ``unbox=False``，旧 MATH 配置行为不变。
+    """
+    if raw is None:
+        return None
+    text = str(raw)
+    if not unbox:
+        return text
+    cand, _reason = extract_answer(text)
+    if cand is not None:
+        return cand
+    return _clean_tail(_strip_latex_wrappers(text))
 
 
 def judge(response_text: str, gold: str, *, rtol: float = 1e-6, symbolic: bool = False) -> dict:

@@ -26,7 +26,7 @@
     pilot.py                   先导选题（排除已暴露 + 标量金标准 + 稳定哈希排序）
     cli.py                     父进程监督者：运行 / 只读汇总
     run.py                     记录、汇总分母与描述统计
-  tests/test_offline_checks.py 58 项离线回归检查（无模型、无网络）
+  tests/test_offline_checks.py 65 项离线回归检查（无模型、无网络）
   tests/fake_backend.py        测试替身后端（只替换外部模型，不复制业务循环）
 ```
 
@@ -54,7 +54,7 @@ git fetch origin --tags && git switch --detach r10-reviewed-20261013   # 获取�
 **所有命令都在仓库根目录执行**。先跑离线检查（退出码非零或结尾不是 `OK` 就停止）：
 
 ```bash
-bash run_offline_checks.sh offline_checks.log    # 期望：Ran 58 tests … OK
+bash run_offline_checks.sh offline_checks.log    # 期望：Ran 65 tests … OK
 ```
 
 （离线通过 **不代表** GPU 路径可用。）

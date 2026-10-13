@@ -1440,5 +1440,184 @@ class TestCodeVersionSourceIdentity(unittest.TestCase):
         self.assertEqual(info["manifest"], W.canonical_manifest_paths())
 
 
+class TestAime24Adapter(unittest.TestCase):
+    """R11 新增接入风险：字段映射、稳定/重复身份、boxed gold、新配置与旧配置兼容。
+
+    只覆盖新增适配面；预算监督、判分平台与分母口径沿用既有用例，不重做。
+    """
+
+    AIME_DATA = {"dataset_id": "math-ai/aime24", "split": "test",
+                 "revision": "83a7f387baaa524a8bda0022eac0541582297103",
+                 "problem_field": "problem", "answer_field": "solution",
+                 "id_field": "id", "id_prefix": "aime24:", "gold_unbox": True, "n_problems": 2}
+    OLD_DATA = {"dataset_id": "HuggingFaceH4/MATH-500", "split": "test", "revision": "data-rev-9",
+                "problem_field": "problem", "answer_field": "answer", "n_problems": 12}
+
+    def test_row_problem_id_mapping_and_errors(self):
+        from x002 import worker as W
+
+        self.assertEqual(W.row_problem_id({"id": 60}, self.AIME_DATA), "aime24:60")
+        self.assertEqual(W.row_problem_id({"id": 0}, self.AIME_DATA), "aime24:0",
+                         "整数 0 是合法身份，不得当缺失")
+        self.assertEqual(W.row_problem_id({"unique_id": "p1"}, self.OLD_DATA), "p1")
+        for bad in ({"id": None}, {"id": ""}, {"id": "   "}, {}):
+            with self.subTest(row=bad):
+                with self.assertRaises(RuntimeError):
+                    W.row_problem_id(bad, self.AIME_DATA)
+
+    def test_duplicate_identity_is_rejected_not_silently_overwritten(self):
+        from x002 import worker as W
+
+        rows = [{"id": 60, "problem": "a", "solution": "\\boxed{1}"},
+                {"id": 60, "problem": "b", "solution": "\\boxed{2}"}]
+        with self.assertRaises(RuntimeError) as ctx:
+            W._index_rows(rows, self.AIME_DATA)
+        self.assertIn("重复题号", str(ctx.exception))
+
+    def test_gold_unbox_uses_same_boxed_parser(self):
+        from x002 import judge as J, worker as W
+
+        for raw, want in (("\\boxed{204}", "204"), ("\\boxed{0}", "0"), ("\\boxed{-3}", "-3"),
+                          ("\\boxed{1,000}", "1,000"), ("204", "204"), ("\\boxed{\\frac{1}{2}}", "\\frac{1}{2}")):
+            with self.subTest(raw=raw):
+                got = W.row_gold({"solution": raw}, self.AIME_DATA)
+                self.assertEqual(got, want)
+                self.assertTrue(J.gold_supported(got)[0], got)
+        # 脱壳后仍不支持的形态照旧拒绝
+        for raw in ("\\boxed{[1,2]}", "\\boxed{}", "\\boxed{1,2}"):
+            with self.subTest(raw=raw):
+                self.assertFalse(J.gold_supported(W.row_gold({"solution": raw}, self.AIME_DATA))[0], raw)
+        # 旧 MATH 配置：不脱壳，行为与 R10 一致
+        self.assertEqual(W.row_gold({"answer": "144"}, self.OLD_DATA), "144")
+        self.assertEqual(W.row_gold({"answer": "\\boxed{5}"}, self.OLD_DATA), "\\boxed{5}")
+
+    def _aime_config(self, tmp, out_dir, rows, exposed=()):
+        cfg = {
+            "schema_version": 4, "card": "X-002",
+            "model": {"path_or_id": "fake/model", "revision": "rev-frozen-123", "dtype": "bfloat16"},
+            "generation": {"max_new_tokens": 8192, "do_sample": True, "temperature": 0.6,
+                           "top_p": 0.95, "seed": 20261013},
+            "data": dict(self.AIME_DATA, n_problems=len(rows)),
+            "feedback": {"text": FEEDBACK},
+            "judge": {"numeric_rtol": 1e-6, "symbolic": False},
+            "run": {"smoke": {"total_minutes": 44}},
+            "paths": {"out_dir": out_dir, "log_name": "records.jsonl"},
+            "run_protocol_version": "x002-aime24-pilot-r11.1",
+            "pilot": {"protocol_version": "x002-aime24-pilot-r11.1", "max_problems": len(rows),
+                      "seed": 20261013, "exposed_ids_path": os.path.join(tmp, "exposed_aime24.json")},
+        }
+        _write(os.path.join(tmp, "exposed_aime24.json"),
+               {"dataset": "math-ai/aime24", "exposed_ids": list(exposed)})
+        return cfg
+
+    def test_reader_selects_ids_and_frozen_list_matches_production_path(self):
+        """用替身载入**原始 rows**（id/solution 字段）走生产读题/选题路径，冻结清单可复核。"""
+        from x002 import worker as W
+
+        rows = [
+            {"id": 60, "problem": "求 1+1。", "solution": "\\boxed{2}", "url": "u60"},
+            {"id": 61, "problem": "求 2+2。", "solution": "\\boxed{4}", "url": "u61"},
+            {"id": 62, "problem": "求区间。", "solution": "\\boxed{[1,2]}", "url": "u62"},
+            {"id": 63, "problem": "求 3+3。", "solution": "\\boxed{6}", "url": "u63"},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "problems.json"), "w", encoding="utf-8") as fh:
+                json.dump([{**r, "problem_id": f"aime24:{r['id']}"} for r in rows], fh, ensure_ascii=False)
+            cfg = self._aime_config(tmp, os.path.join(tmp, "out"), rows)
+            reader = W.StaticReader([{"problem_id": f"aime24:{r['id']}", "problem": r["problem"],
+                                      "gold": W.row_gold(r, self.AIME_DATA)} for r in rows])
+            problems, selection = W.freeze_selection(reader, cfg,
+                                                     dataset_revision=self.AIME_DATA["revision"])
+            header = W.build_run_header(cfg, {"revision": "rev-frozen-123"},
+                                        {"revision": self.AIME_DATA["revision"]}, selection,
+                                        problems, 2700, cfg["paths"]["out_dir"])
+        ids = [p["problem_id"] for p in problems]
+        self.assertEqual(selection["layers"]["pool_total"], 4)
+        self.assertEqual(selection["layers"]["non_scalar_removed"], 1, "区间金标准必须被筛除")
+        self.assertNotIn("aime24:62", ids)
+        self.assertEqual(selection["protocol_version"], "x002-aime24-pilot-r11.1")
+        self.assertEqual(selection["dataset_revision_used_for_sorting"], self.AIME_DATA["revision"])
+        self.assertEqual(header["run_protocol_version"], "x002-aime24-pilot-r11.1")
+        self.assertEqual(header["dataset"]["revision"], self.AIME_DATA["revision"])
+        self.assertEqual(selection["selected_ids_sha16"],
+                         __import__("hashlib").sha256(
+                             ",".join(sorted(ids)).encode("utf-8")).hexdigest()[:16])
+        # 同一输入两次选题必须一致（确定性）
+        with tempfile.TemporaryDirectory() as tmp2:
+            cfg2 = self._aime_config(tmp2, os.path.join(tmp2, "out"), rows)
+            reader2 = W.StaticReader([{"problem_id": f"aime24:{r['id']}", "problem": r["problem"],
+                                       "gold": W.row_gold(r, self.AIME_DATA)} for r in rows])
+            _p2, sel2 = W.freeze_selection(reader2, cfg2, dataset_revision=self.AIME_DATA["revision"])
+        self.assertEqual(sel2["selected_ids_sha16"], selection["selected_ids_sha16"])
+
+    def test_new_config_end_to_end_records_protocol_and_aime_ids(self):
+        """新配置走真实入口：协议标记、稳定题号、AIME 目录、solution 不进提示。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            h = EntryHarness(tmp)
+            with open(h.cfg_path, encoding="utf-8") as fh:
+                cfg = json.load(fh)
+            exposed_path = os.path.join(tmp, "exposed_aime24.json")
+            _write(exposed_path, {"exposed_ids": []})
+            cfg["data"] = {"dataset_id": "math-ai/aime24", "split": "test",
+                           "revision": "data-rev-9", "problem_field": "problem",
+                           "answer_field": "solution", "id_field": "id", "id_prefix": "aime24:",
+                           "gold_unbox": True, "n_problems": 2}
+            cfg["generation"]["max_new_tokens"] = 8192
+            cfg["run_protocol_version"] = "x002-aime24-pilot-r11.1"
+            cfg["pilot"] = {"protocol_version": "x002-aime24-pilot-r11.1", "max_problems": 2,
+                            "seed": 20261013, "exposed_ids_path": exposed_path}
+            _write(h.cfg_path, cfg)
+            pool = [{"problem_id": "aime24:60", "problem": "求 1+1 的值。", "gold": "2"},
+                    {"problem_id": "aime24:61", "problem": "求 2+2 的值。", "gold": "4"}]
+            _write(h.problems_path, pool)
+            _write(h.plan_path, {"aime24:60": {"problem": "求 1+1 的值。", "first": "答案是 \\boxed{3}",
+                                               "A": "重算 \\boxed{2}", "B": "重算 \\boxed{9}"}})
+            rc, out, err = h.run(total_seconds=2700)
+            self.assertEqual(rc, 0, err)
+            recs = R.Store(os.path.join(h.out_dir, "records.jsonl")).records()
+        header = next(r for r in recs if r.get("kind") == "run")
+        self.assertEqual(header["run_protocol_version"], "x002-aime24-pilot-r11.1")
+        self.assertEqual(header["generation"]["max_new_tokens"], 8192)
+        self.assertEqual([p["problem_id"] for p in header["problems"]],
+                         sorted(p["problem_id"] for p in header["problems"]))
+        self.assertTrue(all(pid.startswith("aime24:") for pid in
+                            [p["problem_id"] for p in header["problems"]]))
+        for rec in (r for r in recs if r.get("kind") == "record"):
+            for msg in rec.get("messages", []):
+                self.assertNotIn("solution", msg.get("content", ""))
+                self.assertNotIn("\\boxed{2}", msg.get("content", "") if rec["stage"] == "first" else "")
+
+    def test_truncated_first_round_is_not_an_eligible_error(self):
+        """截断（哪怕带正确数字）不得作为正常错题进入 A/B。"""
+        from x002 import run as RR
+
+        recs = [{"kind": "run", "problems": [{"problem_id": "aime24:60"}],
+                 "run_protocol_version": "x002-aime24-pilot-r11.1", "selection": {"layers": {}}}]
+        recs.append({"kind": "record", "problem_id": "aime24:60", "stage": "first", "arm": "none",
+                     "run_status": "truncated", "judge": {"status": "correct"}, "usage": {}, "seconds": 0.0})
+        summary = RR.summarize(recs)
+        self.assertEqual(summary["first_round"]["n_eligible"], 0)
+        self.assertEqual(summary["second_round_plan"]["n_planned"], 0)
+        self.assertIn("truncated", summary["plan_denominators"]["first_bucket_ids"])
+
+    def test_representative_synthetic_routing(self):
+        """代表性合成回答：正确/错误/无答案/截断四类分流与 A/B 入组判定。"""
+        from x002 import judge as J, worker as W
+
+        cases = [
+            ("\\boxed{204}", "completed", "correct", False),
+            ("The answer is 205.", "completed", "incorrect", True),
+            ("I could not determine it.", "completed", "undetermined", False),
+            ("\\boxed{204}", "truncated", "correct", False),
+            ("", "error", "undetermined", False),
+        ]
+        for text, run_status, want_judge, want_eligible in cases:
+            with self.subTest(text=text, run_status=run_status):
+                judged = J.judge(text, W.row_gold({"solution": "\\boxed{204}"}, self.AIME_DATA))
+                self.assertEqual(judged["status"], want_judge, judged)
+                eligible = run_status == "completed" and judged["status"] == "incorrect"
+                self.assertEqual(eligible, want_eligible)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

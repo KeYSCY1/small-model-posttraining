@@ -1,0 +1,6 @@
+{
+  "dataset": "math-ai/aime24",
+  "revision": "83a7f387baaa524a8bda0022eac0541582297103",
+  "note": "本项目 AIME 已暴露题号清单（当前无 AIME 生成记录，按本地记录核对后为空）。R06 的 MATH 题号不适用于 AIME。",
+  "exposed_ids": []
+}

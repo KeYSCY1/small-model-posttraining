@@ -523,8 +523,45 @@ def write_summary(cfg, store: Store) -> dict:
     return summary
 
 
+def row_problem_id(row, data_cfg: dict) -> str:
+    """把数据集原始行映射为**稳定题号**：``id_field``（默认 ``unique_id``）+ ``id_prefix``（默认空）。
+
+    * AIME 2024 用原始 ``id``（整数，如 60）→ ``aime24:60``；旧 MATH 配置不用改（默认字段/空前缀）。
+    * 拒绝缺失或空身份；**整数 0 是合法身份**，不能用真值判断当缺失。
+    * 不在这里去重：重复身份由调用方（:func:`DatasetReader` / :func:`freeze_selection`）显式报错，
+      避免字典静默覆盖。
+    """
+    field = data_cfg.get("id_field") or "unique_id"
+    if field not in row:
+        raise RuntimeError(f"数据集缺少身份字段 {field!r}（行字段：{sorted(row)[:8]}）")
+    raw = row[field]
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        raise RuntimeError(f"数据集身份字段 {field!r} 为空：{raw!r}")
+    prefix = data_cfg.get("id_prefix") or ""
+    return f"{prefix}{raw}"
+
+
+def row_gold(row, data_cfg: dict):
+    """按 ``answer_field`` 取金标准；``gold_unbox`` 打开时脱去外层 ``\\boxed{}``（见 judge.gold_value）。"""
+    return judge_mod.gold_value(row[data_cfg["answer_field"]], unbox=bool(data_cfg.get("gold_unbox")))
+
+
+def _index_rows(rows, data_cfg: dict) -> dict:
+    """按稳定题号建索引；**重复身份显式报错**，不静默覆盖。"""
+    index: dict = {}
+    dupes: list[str] = []
+    for row in rows:
+        pid = row_problem_id(row, data_cfg)
+        if pid in index:
+            dupes.append(pid)
+        index[pid] = row
+    if dupes:
+        raise RuntimeError(f"数据集存在重复题号，拒绝继续：{sorted(set(dupes))[:5]}")
+    return index
+
+
 class DatasetReader:
-    """真实读题器（延迟导入 datasets）；只暴露 list_ids / get。"""
+    """真实读题器（延迟导入 datasets）；只暴露 list_ids / list_rows / get。"""
 
     def __init__(self, cfg: dict, dataset_ident: dict):
         from datasets import load_dataset
@@ -533,7 +570,8 @@ class DatasetReader:
         ds = load_dataset(d["dataset_id"], split=d.get("split", "test"),
                           revision=dataset_ident.get("revision"))
         self._pf, self._af = d["problem_field"], d["answer_field"]
-        self._index = {row["unique_id"]: row for row in ds}
+        self._data_cfg = d
+        self._index = _index_rows(list(ds), d)
 
     def list_ids(self) -> list[str]:
         return list(self._index.keys())
@@ -542,7 +580,7 @@ class DatasetReader:
         """返回全部题的 (unique_id, gold, subject, level)，供先导筛选；题面按需再取。"""
         rows = []
         for pid, row in self._index.items():
-            rows.append({"unique_id": pid, "gold": row[self._af],
+            rows.append({"unique_id": pid, "gold": row_gold(row, self._data_cfg),
                          "subject": row.get("subject"), "level": row.get("level")})
         return rows
 
@@ -550,7 +588,7 @@ class DatasetReader:
         row = self._index.get(pid)
         if row is None:
             return None
-        return {"problem": row[self._pf], "gold": row[self._af]}
+        return {"problem": row[self._pf], "gold": row_gold(row, self._data_cfg)}
 
 
 # ---------------------------------------------------------------- worker 入口

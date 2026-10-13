@@ -66,3 +66,21 @@ tar czf x002_pilot_r10_results.tar.gz code_version.txt offline_checks.log consol
 ```
 
 带回 `x002_pilot_r10_results.tar.gz` 即可，不需人工整理研究报告。包应包含原始records.jsonl、运行头、started/status、summary与日志；失败时能保存多少就回传多少，不为补齐文件重跑。模型、缓存与虚拟环境不回传。
+
+## 5 AIME 2024 先导（R11，待 PI 审阅）
+
+下一动作指向 **AIME 2024** 新配置；`r10-reviewed-20261013` 仍是已审 MATH-500 历史版本，**不包含** AIME 适配。PI 审阅 R11 并指定 commit/tag 后，按同一顺序执行（部署 → 环境 → 离线检查 → 运行）：
+
+```bash
+git fetch origin --tags && git switch --detach <PI 指定的 R11 commit 或 tag>
+git status --short && git rev-parse HEAD          # 必须干净且与交接一致
+bash run_offline_checks.sh offline_checks.log     # 期望 Ran 65 tests … OK
+python3 -m x002.cli run --config config_aime24.json 2>&1 | tee console.log; echo "exit=${PIPESTATUS[0]}"
+python3 -m x002.cli summarize --out-dir runs/x002_aime24_pilot_r11 | tee summary_console.log
+```
+
+- 数据：`math-ai/aime24` test，固定版本 `83a7f387baaa524a8bda0022eac0541582297103`。首次需把该小数据集下载进缓存（**准备动作，不计入 44 分钟**）；正式运行时读数据**计入** 44 分钟。
+- 生成上限 8192（首轮与两臂同值）；最多 12 题、最多 36 次尝试；外层 44 分钟 / 用户总窗口 ≤45 分钟。
+- 输出目录 `runs/x002_aime24_pilot_r11`（不得写入旧目录）；汇总与回收都用新目录。
+- 目标机既有成功环境**优先保留，不就地升级**；版本检查命令与期望值同第 2 节。
+- 结果打包：`tar czf x002_aime24_pilot_r11_results.tar.gz code_version.txt offline_checks.log console.log summary_console.log runs/x002_aime24_pilot_r11`
