@@ -1,0 +1,31 @@
+# 本地环境与凭据
+.DS_Store
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+*.pem
+*.key
+
+# 模型、数据缓存与实验输出单独保留
+models/
+checkpoints/
+cache/
+.cache/
+datasets/
+runs/
+outputs/
+results/
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.log
+*.jsonl
+*.tar.gz
+*.zip

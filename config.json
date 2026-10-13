@@ -1,0 +1,59 @@
+{
+  "schema_version": 4,
+  "card": "X-002",
+  "note": "一次性工程试运行配置。题号由规则自动冻结，无需手填；本目录启动后拒绝再次生成。",
+  "model": {
+    "path_or_id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
+    "revision": null,
+    "revision_note": "留空时由工作进程解析为实际 commit 并写入运行头；解析失败直接报错。",
+    "dtype": "bfloat16",
+    "trust_remote_code": false
+  },
+  "generation": {
+    "max_new_tokens": 4096,
+    "max_new_tokens_note": "首轮与 A/B 两臂同一上限；时间由外层总截止控制，不把该值当时间硬停止。",
+    "do_sample": true,
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "seed": 20261013
+  },
+  "data": {
+    "dataset_id": "HuggingFaceH4/MATH-500",
+    "split": "test",
+    "revision": null,
+    "problem_field": "problem",
+    "answer_field": "answer",
+    "n_problems": 48,
+    "selection_rule": "sort_unique_id_ascending_take_first_n",
+    "selection_note": "按 unique_id 升序取前 n_problems 道；与模型输出无关，不按结果挑题。",
+    "n_problems_note": "先导批次目标题量（上限）；实际入组数由 pilot 规则逐层筛选后决定，不足时如实记录 shortfall，不放宽筛选条件。"
+  },
+  "feedback": {
+    "text": "此前对本题的一次作答未通过自动检查，请重新求解本题。"
+  },
+  "judge": {
+    "numeric_rtol": 1e-06,
+    "symbolic": false,
+    "symbolic_note": "符号判分本轮关闭（symbolic=false）；符号分支未在真实数据上验证，环境虽装有 SymPy 也不代表该路径已测。"
+  },
+  "run": {
+    "smoke": {
+      "total_minutes": 44,
+      "note": "外层总截止 44 分钟、用户总窗口 ≤45 分钟，包含模型加载与生成；到点如实收尾，不自动延时。"
+    }
+  },
+  "paths": {
+    "out_dir": "runs/x002_pilot_r07",
+    "log_name": "records.jsonl",
+    "out_dir_note": "新目录；一次性语义会拒绝覆盖或续跑旧目录（R06 的 runs/x002_smoke 保留只读）。"
+  },
+  "run_protocol_version": "x002-pilot-r07.1",
+  "pilot": {
+    "protocol_version": "x002-pilot-r07.1",
+    "max_problems": 48,
+    "seed": 20261013,
+    "exposed_ids_path": "exposed_problems_r06.json",
+    "rule": "sha256(protocol|dataset_revision|seed|unique_id|normalized_gold) ascending, take first N",
+    "note": "与模型输出无关的预先确定规则：先排除已暴露题，再只取现行判分支持的标量金标准，再按稳定哈希排序取前 N。"
+  }
+}

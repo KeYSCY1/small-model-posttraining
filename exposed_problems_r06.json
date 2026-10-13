@@ -1,0 +1,20 @@
+{
+  "exposed_ids": [
+    "test/algebra/1004.json",
+    "test/algebra/101.json",
+    "test/algebra/1031.json",
+    "test/algebra/1035.json",
+    "test/algebra/1072.json",
+    "test/algebra/1078.json",
+    "test/algebra/1082.json",
+    "test/algebra/109.json",
+    "test/algebra/1098.json",
+    "test/algebra/114.json",
+    "test/algebra/1143.json",
+    "test/algebra/1184.json"
+  ],
+  "note": "R06 首次真实工程试运行（2026-10-13 16:10）已看过的首轮题号；仅记录题号，不含题面/答案。后续先导批次必须排除这些 ID。",
+  "source": "20261013/X-002_试运行结果/runs/x002_smoke/records.jsonl",
+  "run_started_at": "2026-10-13T16:10:51+0800",
+  "count": 12
+}
